@@ -1,0 +1,40 @@
+# Loaded only by the Windows toolchain, after project(). Upstream targets and
+# source globs stay intact; attach compatibility after all targets exist.
+if(NOT WIN32)
+    message(FATAL_ERROR "The Windows compatibility layer requires WIN32")
+endif()
+if(NOT PROJECT_NAME STREQUAL "OTPClient")
+    return()
+endif()
+set(_otp_windows_root "${CMAKE_CURRENT_LIST_DIR}/../src/platform/windows")
+include_directories(BEFORE "${_otp_windows_root}/compat")
+
+function(otp_windows_targets)
+    if(BUILD_GUI OR BUILD_SEARCH_PROVIDER OR BUILD_TESTING OR IS_FLATPAK)
+        message(FATAL_ERROR "This spike supports CLI only; disable GUI, search provider, tests and Flatpak")
+    endif()
+    if(NOT BUILD_CLI)
+        message(FATAL_ERROR "This spike requires BUILD_CLI")
+    endif()
+    find_path(OTP_WINDOWS_GETTEXT_INCLUDE libintl.h
+        HINTS "${OTP_WINDOWS_GETTEXT_ROOT}/include" REQUIRED)
+    find_library(OTP_WINDOWS_GETTEXT_LIBRARY intl
+        HINTS "${OTP_WINDOWS_GETTEXT_ROOT}/lib" REQUIRED)
+    set(_target "${PROJECT_NAME}-cli")
+    get_target_property(_compile ${_target} COMPILE_OPTIONS)
+    list(REMOVE_ITEM _compile -fPIE -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3)
+    set_property(TARGET ${_target} PROPERTY COMPILE_OPTIONS "${_compile}")
+    get_target_property(_link ${_target} LINK_OPTIONS)
+    if(_link)
+        list(REMOVE_ITEM _link -pie)
+        set_property(TARGET ${_target} PROPERTY LINK_OPTIONS "${_link}")
+    endif()
+    target_sources(${_target} PRIVATE "${_otp_windows_root}/compat.c")
+    set_source_files_properties("${_otp_windows_root}/compat.c" TARGET_DIRECTORY ${_target} PROPERTIES
+        COMPILE_DEFINITIONS OTP_WINDOWS_COMPAT_IMPLEMENTATION)
+    target_include_directories(${_target} PRIVATE "${OTP_WINDOWS_GETTEXT_INCLUDE}")
+    target_compile_options(${_target} PRIVATE
+        -include "${_otp_windows_root}/compat/otp-windows.h")
+    target_link_libraries(${_target} "${OTP_WINDOWS_GETTEXT_LIBRARY}")
+endfunction()
+cmake_language(DEFER CALL otp_windows_targets)

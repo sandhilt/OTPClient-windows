@@ -91,8 +91,10 @@
           windows = windowsPkgs.mkShell {
             name = "otpclient-windows-cross";
             nativeBuildInputs = with pkgs; [ cmake ninja pkg-config git ripgrep ];
-            buildInputs = with windowsPkgs; [ glib libgcrypt jansson libcotp ];
+            buildInputs = with windowsPkgs; [ glib libgcrypt jansson libcotp gettext libgpg-error.dev pcre2.dev ];
             packages = [ pkgs.wineWow64Packages.stable ];
+            # Prefix cmake/windows.cmake searches for libintl (pass as -DOTP_WINDOWS_GETTEXT_ROOT=...).
+            OTP_WINDOWS_GETTEXT_ROOT = "${windowsPkgs.gettext}";
           };
         });
 

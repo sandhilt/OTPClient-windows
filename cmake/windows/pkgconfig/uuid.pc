@@ -1,0 +1,5 @@
+Name: uuid
+Description: OTPClient Windows UUID compatibility (GLib random UUID)
+Version: 2.30.0
+Libs:
+Cflags:
