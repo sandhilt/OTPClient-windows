@@ -147,9 +147,12 @@ tcsetattr (int fd, int action, const struct termios *state)
         return -1;
     }
     intptr_t raw_handle = _get_osfhandle (fd);
-    if (action == TCSAFLUSH && !FlushConsoleInputBuffer ((HANDLE) raw_handle)) {
-        errno = ENOTTY;
-        return -1;
+    if (action == TCSAFLUSH) {
+        if (!FlushConsoleInputBuffer ((HANDLE) raw_handle)) {
+            errno = ENOTTY;
+            return -1;
+        }
+        otp_console_flush ((HANDLE) raw_handle);
     }
     if (SetConsoleMode ((HANDLE) raw_handle, state->c_lflag)) return 0;
     errno = ENOTTY;
@@ -160,20 +163,6 @@ int
 otp_sigemptyset (otp_sigset_t *set)
 {
     *set = 0;
-    return 0;
-}
-
-int
-otp_sigaction (int signo, const struct sigaction *action, struct sigaction *old)
-{
-    /* WINDOWS-STUB: CRT signal handlers are supported, but POSIX signal masks,
-     * SIGHUP semantics and console-control cleanup are not equivalent. */
-    void (*previous)(int) = signal (signo, action->sa_handler);
-    if (previous == SIG_ERR) return -1;
-    if (old) {
-        old->sa_handler = previous;
-        old->sa_mask = old->sa_flags = 0;
-    }
     return 0;
 }
 

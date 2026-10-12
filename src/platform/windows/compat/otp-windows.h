@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <io.h>
 #include <signal.h>
 #include <sys/stat.h>
 
@@ -23,6 +24,8 @@ struct sigaction { void (*sa_handler)(int); otp_sigset_t sa_mask; int sa_flags; 
 #define SIGHUP SIGBREAK
 int otp_sigemptyset (otp_sigset_t *set);
 int otp_sigaction (int signo, const struct sigaction *action, struct sigaction *old);
+ssize_t otp_read (int fd, void *buffer, unsigned count);
+void otp_console_flush (HANDLE input);
 void otp_explicit_bzero (void *buffer, size_t length);
 void otp_free (gpointer buffer);
 ssize_t otp_getline (char **line, size_t *capacity, FILE *stream);
@@ -42,6 +45,7 @@ GFileInfo *otp_file_query_info (GFile *file, const char *attributes, GFileQueryI
 #ifndef OTP_WINDOWS_COMPAT_IMPLEMENTATION
 #define sigemptyset otp_sigemptyset
 #define sigaction(...) otp_sigaction (__VA_ARGS__)
+#define read otp_read
 #define explicit_bzero otp_explicit_bzero
 #define g_free otp_free
 #define getline otp_getline

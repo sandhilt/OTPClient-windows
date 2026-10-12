@@ -129,6 +129,201 @@ accepts an absolute destination and replacement of an existing file. GIO's
 seek virtual functions used by the adapter. These references do not constitute
 runtime verification of this implementation.
 
+### Console password interruption redesign (2026-10-12)
+
+The previous `CancelSynchronousIo` design failed the manager's native Windows 11
+tests. `tap-run-140626.txt` records `wait=258` (timeout) for the interrupt child;
+`child-scenarios.txt` records early=77 in 53 ms and ignored=0, but pending int/break
+children timed out. `variants-out.txt` records 3/3 timeouts each for Ctrl+C and
+Ctrl+Break without Enter (15 seconds). `harness-out.txt` records that Enter after
+the generated control also failed to release the new build, while prompt display,
+no echo, modes 0x1F7/0x1F3/0x1F7, typeahead flushing and wrong-password rejection
+passed. Non-console and existing shim checks passed in those logs. These are
+manager-supplied results for the previous revision, not execution of this redesign.
+
+Source reasoning: the previous wrapper could inspect its latch only before or
+after the blocking CRT `_read`; the callback depended on cancelling that call
+and kept an active-read retry loop until the wrapper retired it. The interrupt
+latch was never consumed by a read, so later reads with the same installed actions
+would also return EINTR indefinitely. That persistent-latch defect is established
+by source inspection. **Why CancelSynchronousIo failed, and the exact cause of
+Enter no longer releasing the already pending read, are NOT VERIFIED.** The
+12-thread snapshot in `int-threads.txt` has no Sleep waiter and does not support
+the retry-loop explanation. It does not identify a kernel/CRT or lock stack.
+The redesign removes the entire synchronous-read cancellation path rather than
+claiming a verified explanation of those native hangs.
+
+`console.c` now waits on a manual-reset interrupt event and the console input
+handle. Its control callback calls the installed C handler first (so the CLI's
+`password_signal` is visible), latches interruption, calls `SetEvent`, and
+returns TRUE. There are no duplicated thread handles, cancellation calls or
+retry sleeps. SIG_DFL/SIG_IGN fall through to the CRT/OS; the callback is removed
+when neither signal has a real handler. SIGHUP retains its SIGBREAK alias.
+Actions, line state and event reset share an SRW lock; the lock is released
+during `WaitForMultipleObjects`, and after each consumed record.
+
+The compatibility header still redirects `read` without upstream edits.
+`GetConsoleMode` selects the console branch, including when no handler is
+installed; files, pipes, NUL and zero-length calls stay on plain CRT `_read`.
+The console branch never calls `ReadFile`, `ReadConsole` or CRT `_read`.
+[ReadConsoleInput](https://learn.microsoft.com/en-us/windows/console/readconsoleinput)
+documents that any unread input record signals the console handle.
+[SetConsoleMode](https://learn.microsoft.com/en-us/windows/console/setconsolemode)
+documents that line/echo processing applies to ReadFile/ReadConsole, requiring
+manual line assembly when consuming records.
+
+After readiness, the wrapper peeks one record, then consumes it with dynamically
+resolved `ReadConsoleInputExW(CONSOLE_READ_NOWAIT)`. This is a deliberate
+deviation from a Peek/ReadConsoleInputW pair: the queue could become empty between
+those calls (for example around Ctrl+Break), leaving ReadConsoleInputW blocked.
+[Microsoft documents NOWAIT](https://learn.microsoft.com/en-us/windows/console/readconsoleinputex)
+as returning even for an empty queue, with dynamic lookup from Kernel32.dll and
+Windows 7 as the minimum client. This closes the race without relying on I/O
+cancellation. Missing ExW produces ENOSYS, with no blocking fallback. This is a
+documented API choice, not a measured runtime result.
+
+Only key-down records with nonzero Unicode characters enter the line buffer;
+mouse/focus/resize, key-up and zero-character records are consumed and ignored.
+Character/backspace repeat counts are handled. In line mode, Enter completes a
+line and backspace removes one UTF-8 code point (or a pending high surrogate).
+UTF-16 surrogate pairs become UTF-8; unpaired surrogates become U+FFFD.
+Enter emits LF, matching the CLI's text-mode CRT CRLF translation; no extra CR
+or LF is retained for the next prompt. Complete lines are served across
+`get_pwd`'s one-byte reads. The buffer grows in libgcrypt secure memory, explicitly
+checks `gcry_is_secure`, and returns ENOMEM rather than using ordinary heap
+storage. Served bytes, deleted characters, old growth allocations, input-record
+scratch storage and discarded lines are wiped with `SecureZeroMemory`. The
+wrapper never writes typed input to the console or a log.
+
+On interruption, the wrapper wipes the partial/ready line, consumes all latches
+for its reader thread, resets the manual-reset event and returns -1/EINTR once.
+An ordinary Enter on the next call can complete a fresh line with the same
+handlers installed. Registration/restoration resets its action's latch.
+`tcsetattr(TCSAFLUSH)` now discards both OS input and buffered line bytes,
+including an unread suffix after the CLI's 511-byte limit. It preserves pending
+signals, including a signal before the first read. This prevents stale bytes or
+event state carrying into successive import/export password prompts. Native
+confirmation of this behavior, including Enter after Ctrl+C, is still pending.
+
+`WINDOWS-STUB` limits are explicit in the source: one console reader/thread,
+no cooked history/cursor editing or binary-console CRLF/code-page emulation;
+this is the CLI's no-echo UTF-8 password path. POSIX masks/flags, true SIGHUP,
+asynchronous SIGTERM, close/logoff/shutdown, debugger interception and console
+reattachment remain unsupported. C handlers must be leaf handlers with no CRT
+I/O or shim reentry. Other programs consuming the same console may remove input;
+NOWAIT prevents such removal from turning consumption into a blocking read.
+
+`OTP_WINDOWS_SHIM_CHECKS=ON` builds `otp-windows-console-check.exe`. A wait
+handshake is compiled only into that target; the CLI and existing shim executable
+have no test hook. Hidden child consoles isolate generated events from the parent.
+The sender waits for an empty-queue read handshake, verifies that the read stays
+pending for 100 ms without Enter, then uses
+[GenerateConsoleCtrlEvent](https://learn.microsoft.com/en-us/windows/console/generateconsolectrlevent).
+Injected ^C key records did not generate controls in the native harness, so they
+cannot test this callback. Each successful interrupted read must complete within
+2 seconds of generation. The parent bounds every child to 8 seconds, terminates
+and reaps a timed-out child, reports scenario/wait/exit/timing and continues;
+nonfatal parent assertions allow the remaining TAP tests to run.
+
+The four test cases (assertions only; **not executed here**) are:
+
+- `/windows/console-interrupt`: 20 cycles each of pending Ctrl+C/Ctrl+Break,
+  early controls, both early controls together, restored `raise(SIGINT)`,
+  plus SIG_IGN. Pending reads include noise, empty lines and partial Unicode.
+  Every EINTR is followed by ordinary Enter with the same handlers, and checks
+  the flag, exact mode restoration and delegation after restoration.
+- `/windows/console-lines`: 20 prompt cycles checking no cursor/screen changes,
+  ignored input records, backspace/repeats, BMP/supplementary UTF-8, unpaired
+  surrogate handling, typeahead, secure-buffer growth and 511-byte truncation
+  followed by flushing and another prompt.
+- `/windows/console-default`: compares no-handler Ctrl+C/Ctrl+Break exit behavior
+  against child processes reading through plain CRT `_read`.
+- `/windows/nonconsole-read`: file/pipe CRLF and Ctrl+Z translation, binary file
+  bytes, NUL EOF and zero-length calls.
+
+**Verified here: cross-compilation/linking only.** The CLI and both check
+executables built from clean objects in `/tmp/otp-win-build4` with no compiler or
+linker warnings. Configure reports optional bash-completion pkg-config metadata
+missing; configuration succeeds. Logs: `/tmp/otp-win-build4-configure.log` and
+`/tmp/otp-win-build4-build.log`. No .exe, Nix, Wine, Linux tests or native console
+tests were executed. Windows 11 regression results for this redesign are pending.
+The committed private-file/security implementations and upstream files were not
+edited. No commit was made.
+
+Changed paths (line references for this revision):
+
+| File | Source entry points |
+|---|---|
+| `src/platform/windows/console.c` | `:67` consume/reset; `:84` callback; `:179` secure buffer; `:222` editing/UTF-8; `:264` event-driven read |
+| `src/platform/windows/console-check.c` | `:28` pending-read sender; `:147` line/prompt cases; `:340` bounded child wait; `:485` nonfatal TAP |
+| `src/platform/windows/compat.c` | `:143` flush OS and shim input |
+| `src/platform/windows/compat/otp-windows.h` | `:28` read/flush declarations; `:48` read redirect |
+| `cmake/windows.cmake` | `:33` CLI source; `:59` console-check-only handshake definition |
+| `docs/windows-build.md` | `:132` previous failure evidence, redesign and pending native verification |
+
+Rebuild from the repository root using the manager's exported environment:
+
+```sh
+source /tmp/claude-1000/-home-sandhilt-workspace-OTPClient-windows/42d068b6-91af-47fd-bf85-ce9c99ea1974/scratchpad/win-env.sh
+export PKG_CONFIG_PATH=/nix/store/k9ybcll1npa94kppyyn11zg817a5n810-libgpg-error-x86_64-w64-mingw32-1.61-dev/lib/pkgconfig:/nix/store/634njvdl9j4y0781l28r40bcqwfbhr0w-pcre2-x86_64-w64-mingw32-10.48-dev/lib/pkgconfig:$PKG_CONFIG_PATH
+export OTP_WINDOWS_GETTEXT_ROOT=/nix/store/ywigw24851mjsyanpykx4ps3c3i5nclb-gettext-x86_64-w64-mingw32-1.0
+cmake -S . -B /tmp/otp-win-build4 -G Ninja \
+  -DCMAKE_TOOLCHAIN_FILE="$PWD/cmake/windows-ucrt.cmake" \
+  -DOTP_WINDOWS_GETTEXT_ROOT="$OTP_WINDOWS_GETTEXT_ROOT" \
+  -DBUILD_GUI=OFF -DBUILD_SEARCH_PROVIDER=OFF -DBUILD_TESTING=OFF \
+  -DOTP_WINDOWS_SHIM_CHECKS=ON
+cmake --build /tmp/otp-win-build4 --clean-first -j8
+```
+
+Stage with the known runtime DLLs, copying only these new executables:
+
+```sh
+console_stage=$(mktemp -d /tmp/otp-win-console-stage4.XXXXXX)
+cp /tmp/otp-win-stage.jaUV3P/*.dll "$console_stage/"
+cp /tmp/otp-win-build4/src/cli/otpclient-cli.exe \
+   /tmp/otp-win-build4/otp-windows-shim-check.exe \
+   /tmp/otp-win-build4/otp-windows-console-check.exe "$console_stage/"
+printf 'Copy this directory to Windows: %s\n' "$console_stage"
+```
+
+Copy that directory to Windows and open PowerShell there. These native commands
+have **not** been run for the redesign:
+
+```powershell
+$failed = $false
+1..3 | ForEach-Object {
+    .\otp-windows-console-check.exe --tap
+    if ($LASTEXITCODE -ne 0) { $failed = $true }
+    .\otp-windows-shim-check.exe --tap
+    if ($LASTEXITCODE -ne 0) { $failed = $true }
+}
+if ($failed) { throw "Windows regression checks failed; review all TAP runs" }
+
+# Disposable existing DB; omit -p so this exercises the real console prompt.
+.\otpclient-cli.exe --list -d 'C:\otp-test\test.db'
+# Press Ctrl+C WITHOUT Enter; expected prompt cleanup followed by exit 3.
+$LASTEXITCODE
+# Repeat with Ctrl+Break, partial dummy input, and normal Enter.
+.\otpclient-cli.exe --list -d 'C:\otp-test\test.db'
+$LASTEXITCODE
+```
+
+Repeat the manager's real-console harness against the new stage, including
+prompt display, no echo, exact console modes, typeahead, correct/wrong passwords,
+pipes/files/NUL, Ctrl+C/Break without Enter and with Enter after the control,
+and successive DB/import/export prompts in the same process. Hidden tests
+exercise the shim and do not prove the complete CLI workflow or real keyboard
+behavior. For an encrypted import/export prompt cycle, use a disposable
+Authenticator Pro backup with a known dummy password:
+
+```powershell
+.\otpclient-cli.exe --import -t authpro_encrypted -f 'C:\otp-test\dummy-authpro.bin' -d 'C:\otp-test\roundtrip.db'
+# Supply the DB password, then the backup's dummy encryption password.
+New-Item -ItemType Directory -Force -Path 'C:\otp-test\export' | Out-Null
+.\otpclient-cli.exe --export -t authpro_encrypted -d 'C:\otp-test\roundtrip.db' -o 'C:\otp-test\export'
+# Supply the DB password, then a new dummy export encryption password.
+```
+
 ### Exact build commands used
 
 Run in Bash from the repository root. Source each environment in the same shell
@@ -176,9 +371,11 @@ Every stub has a `/* WINDOWS-STUB: ... */` marker in the new platform code:
   and upstream warns. Private exports also flush before handle-based replacement,
   with no parent-directory durability guarantee. Crash-safe replacement/durability
   is unverified. A failed temporary cleanup can leave a user-private partial file.
-- Signal handling maps to CRT `signal`, with `SIGHUP` mapped to `SIGBREAK`;
-  POSIX masks and console-control cleanup are not implemented. Console echo
-  mode changes exist, but interactive cancellation is unverified.
+- CRT signal dispositions now have a console-control cancellation adapter for
+  SIGINT/SIGBREAK (SIGHUP alias); see the console interruption follow-up above.
+  POSIX masks/flags, true SIGHUP, SIGTERM interruption and close/logoff/shutdown
+  cleanup remain unsupported. Console interruption and echo restoration have
+  compiled automated coverage but still require native execution.
 
 The lock shim is implemented, not stubbed. Same-process exclusion and other
 Windows-specific security/atomicity properties require runtime validation.

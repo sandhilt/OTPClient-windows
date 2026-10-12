@@ -30,8 +30,9 @@ function(otp_windows_targets)
         set_property(TARGET ${_target} PROPERTY LINK_OPTIONS "${_link}")
     endif()
     target_sources(${_target} PRIVATE "${_otp_windows_root}/compat.c")
+    target_sources(${_target} PRIVATE "${_otp_windows_root}/console.c")
     target_sources(${_target} PRIVATE "${_otp_windows_root}/security.c" "${_otp_windows_root}/private-file.c")
-    set_source_files_properties("${_otp_windows_root}/compat.c" "${_otp_windows_root}/security.c" "${_otp_windows_root}/private-file.c" TARGET_DIRECTORY ${_target} PROPERTIES
+    set_source_files_properties("${_otp_windows_root}/compat.c" "${_otp_windows_root}/console.c" "${_otp_windows_root}/security.c" "${_otp_windows_root}/private-file.c" TARGET_DIRECTORY ${_target} PROPERTIES
         COMPILE_DEFINITIONS OTP_WINDOWS_COMPAT_IMPLEMENTATION)
     target_include_directories(${_target} PRIVATE "${OTP_WINDOWS_GETTEXT_INCLUDE}")
     target_compile_options(${_target} PRIVATE
@@ -40,7 +41,7 @@ function(otp_windows_targets)
     option(OTP_WINDOWS_SHIM_CHECKS "Build Windows-only shim regression executable" OFF)
     if(OTP_WINDOWS_SHIM_CHECKS)
         add_executable(otp-windows-shim-check
-            "${_otp_windows_root}/shim-check.c" "${_otp_windows_root}/compat.c"
+            "${_otp_windows_root}/shim-check.c" "${_otp_windows_root}/compat.c" "${_otp_windows_root}/console.c"
             "${_otp_windows_root}/security.c" "${_otp_windows_root}/private-file.c")
         get_target_property(_includes ${_target} INCLUDE_DIRECTORIES)
         get_target_property(_libraries ${_target} LINK_LIBRARIES)
@@ -48,6 +49,15 @@ function(otp_windows_targets)
         target_compile_options(otp-windows-shim-check PRIVATE ${_compile})
         target_compile_definitions(otp-windows-shim-check PRIVATE OTP_WINDOWS_COMPAT_IMPLEMENTATION)
         target_link_libraries(otp-windows-shim-check PRIVATE ${_libraries})
+        add_executable(otp-windows-console-check
+            "${_otp_windows_root}/console-check.c" "${_otp_windows_root}/console.c"
+            "${_otp_windows_root}/compat.c" "${_otp_windows_root}/security.c"
+            "${_otp_windows_root}/private-file.c")
+        target_include_directories(otp-windows-console-check PRIVATE ${_includes})
+        target_compile_options(otp-windows-console-check PRIVATE ${_compile})
+        target_compile_definitions(otp-windows-console-check PRIVATE
+            OTP_WINDOWS_COMPAT_IMPLEMENTATION OTP_WINDOWS_CONSOLE_CHECK)
+        target_link_libraries(otp-windows-console-check PRIVATE ${_libraries})
     endif()
 endfunction()
 cmake_language(DEFER CALL otp_windows_targets)
