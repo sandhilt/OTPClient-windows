@@ -2,37 +2,44 @@
 
 Every Linux/POSIX/desktop-specific coupling found in the tree (upstream 5.2.2), with the Windows candidate and the kind of seam it needs. Produced by two read-only audits (not a proof of completeness; re-grep after every upstream merge) (`src/common` + CLI + build; `src/gui` + search provider), then spot-checked against the code. Line numbers drift; re-run `git grep` before relying on them.
 
-**Reading the table.** Everything in the "Windows candidate" column is a hypothesis. Nothing here has been built or run on Windows. "Seam": **shim** = a Windows replacement for an existing include/symbol, no call-site edit; **port** = an explicit interface in `src/platform/` plus a small call-site edit; **none** = works as is (GLib/portable) or is excluded.
+**Reading the table.** The "Windows candidate" column distinguishes implemented core/CLI shims, explicit stubs and remaining hypotheses. Native Windows 11 results are recorded in `docs/windows-build.md`; compilation is not runtime proof. Shim paths below are relative to `src/platform/windows/`; upstream file:line pointers were rechecked on 2026-10-12. GUI candidates remain unimplemented. "Seam": **shim** = a Windows replacement for an existing include/symbol, no call-site edit; **port** = an explicit interface in `src/platform/` plus a small call-site edit; **none** = works as is (GLib/portable) or is excluded.
 
 ## 1. `src/common` and the CLI (compiled into every target)
 
 | Where | Linux API | Purpose | Windows candidate | Seam |
 |---|---|---|---|---|
-| `common.c:100,112`; `cli/main.c:231` | `getrlimit/setrlimit(RLIMIT_MEMLOCK)` | size libgcrypt's secure-memory pool; the CLI aborts if the query fails | no direct mapping; derive a pool size from a Windows policy (working-set limits / `VirtualLock`) | port |
-| `common.c:126,130` | `prctl(PR_SET_DUMPABLE)`, `RLIMIT_CORE` | stop crash dumps containing secrets | Windows dump/WER policy; `SetErrorMode` alone is not shown to be equivalent | port |
-| `common.c:185`, `db-common.c:179`, `authpro.c:274`; `gui/*`, `search-provider.c:212` | `explicit_bzero` (with `_DEFAULT_SOURCE`) | wipe passwords and keys | compat function over `SecureZeroMemory`; must not be optimised away | shim |
-| `parse-uri.c:234`, `settings-import-export.c:136` | `strnlen` | bound input length | normally available in the MinGW CRT (not verified); otherwise a bounded shim | shim |
-| `cli/exec-action.c:475` | `getline`, `ssize_t` | read a DB path from stdin | small line-reader shim | shim |
-| `common.c:777-792` | `open(O_NOFOLLOW\|O_CLOEXEC)`, `fstat`, `S_ISREG` | open an import file once, refuse symlinks and non-regular files | `CreateFileW` + reparse-point/type checks; keep UTF-8 → UTF-16 conversion | port |
-| `aegis.c:102`, `authpro.c:64`, `twofas.c:89`, `freeotp.c:46` | `/proc/self/fd/%d` | feed path-based parsers the already-opened (and already checked) fd | **no equivalent.** Pass the opened handle/stream to the parsers instead of reopening a path. Needs real edits in four upstream files | port |
-| `db-common.c:260,1665` | POSIX `read/write/close` on fds | binary DB I/O with short-I/O handling | CRT fd adapter (binary mode) or Win32 handle I/O | shim |
-| `db-common.c:376,451,544` | `flock(LOCK_EX\|LOCK_NB)`, `LOCK_UN` | serialise writers; the code relies on two separately opened fds in one process excluding each other (`db-common.c:358`) | `LockFileEx`/`UnlockFileEx`; verify that same-process exclusion, lock range, sharing flags and error mapping | shim |
-| `db-common.c:311,313,339` | literal `/` temp path, `g_mkstemp_full`, `g_rename` | atomic replace | native path building; `ReplaceFileW`/`MoveFileExW` | port |
-| `db-common.c:286,323` | `fsync` of file and parent directory | durability | `FlushFileBuffers`; no established equivalent for directory flush | port |
-| `db-common.c:408,2097,2108`; `freeotp.c:72`, `aegis.c:592` | `0700/0600`, `umask`, `g_chmod`, `G_FILE_CREATE_PRIVATE` | private files and lock dirs | per-user DACLs at creation; CRT mode bits are not access control | port |
-| `cli/exec-action.c:127,147` | POSIX mode check on `--password-file` | reject symlinks, non-regular files, group/other access | handle-based reparse/type checks + DACL validation | port |
-| `cli/exec-action.c:506-565` | `isatty`, `termios`, `sigaction`, `raise` | no-echo password prompt, restore terminal on SIGINT/TERM/HUP | `GetConsoleMode/SetConsoleMode`, console-control handler; separate path for pipes/files | port |
+| `common.c:100,112`; `cli/main.c:231` | `getrlimit/setrlimit(RLIMIT_MEMLOCK)` | size libgcrypt's secure-memory pool; the CLI aborts if the query fails | stub in `compat/sys/resource.h:11,18`: fixed 64 MiB budget, `setrlimit` → `ENOSYS`; not a measured page-lock limit | shim (stub) |
+| `common.c:126,130` | `prctl(PR_SET_DUMPABLE)`, `RLIMIT_CORE` | stop crash dumps containing secrets | stubs in `compat/sys/prctl.h:6` and `compat/sys/resource.h:18` return `ENOSYS`; upstream warns, dump prevention is not implemented | shim (stub) |
+| `common.c:185`, `db-common.c:179`, `authpro.c:274`; `gui/*`, `search-provider.c:212` | `explicit_bzero` (with `_DEFAULT_SOURCE`) | wipe passwords and keys | `compat.c:13`: `SecureZeroMemory` | shim (implemented) |
+| `parse-uri.c:234`, `settings-import-export.c:136` | `strnlen` | bound input length | MinGW CRT declaration/symbol resolves in the cross build; no custom shim | none (compiled) |
+| `cli/exec-action.c:475` | `getline`, `ssize_t` | read a DB path from stdin | `compat.c:170`: line reader; `ssize_t` supplied by the MinGW headers | shim (implemented) |
+| `common.c:777-792` | `open(O_NOFOLLOW\|O_CLOEXEC)`, `fstat`, `S_ISREG` | open an import file once, refuse symlinks and non-regular files | `compat.c:28,47`: UTF-16 `CreateFileW`, reparse/type checks and binary non-inheritable CRT descriptor; `security.c:104` supplies DACL-aware fstat | shim (implemented) |
+| `aegis.c:102`, `authpro.c:64`, `twofas.c:89`, `freeotp.c:46` | `/proc/self/fd/%d` | feed path-based parsers the already-opened (and already checked) fd | `compat.c:218,351,368,411`: fd transport tokens, JSON callbacks, secure URI contents and seekable GIO stream; no path reopening or upstream call-site edits | shim (implemented) |
+| `db-common.c:260,1665` | POSIX `read/write/close` on fds | binary DB I/O with short-I/O handling | `compat.c:28,102` adds binary mode to opens/temporaries; `console.c:264` delegates non-console reads to CRT | shim (implemented) |
+| `db-common.c:376,451,544` | `flock(LOCK_EX\|LOCK_NB)`, `LOCK_UN` | serialise writers; the code relies on two separately opened fds in one process excluding each other (`db-common.c:358`) | `compat.c:108`: `LockFileEx`/`UnlockFileEx` over the wide lock range; contention → `EWOULDBLOCK`, unsupported → `ENOSYS`. Same-process/multiprocess exclusion and fallback not runtime-verified | shim (implemented) |
+| `db-common.c:311,313,339` | literal `/` temp path, `g_mkstemp_full`, `g_rename` | atomic replace | DB keeps upstream temp path/`g_rename`; `compat.c:102` adds binary mode. Private GIO exports use `private-file.c:57` held-handle `FileRenameInfo`, with terminated UTF-16 name and verified retained DACL; native rename regression passed | shim (partial) |
+| `db-common.c:286,323` | `fsync` of file and parent directory | durability | `compat.c:93`: file `_commit`; parent open at `db-common.c:283` fails before flush and warns at `:347`. Private exports use `FlushFileBuffers` (`private-file.c:78`); directory durability remains a stub | shim (partial/stub) |
+| `db-common.c:408,2097,2108,2165,2175`; `freeotp.c:72`, `aegis.c:592` | `0700/0600`, `umask`, `g_chmod`, `G_FILE_CREATE_PRIVATE` | private files and lock dirs | `compat.c:74,84`: chmod/umask no-ops. `private-file.c:123,167,184,190` creates/checks a protected user-only DACL for private GIO exports; DB/lock/temp creation and copies still inherit ACLs | shim (partial/stub) |
+| `cli/exec-action.c:127,147` | POSIX mode check on `--password-file` | reject symlinks, non-regular files, group/other access | `compat.c:28` no-follow open + `security.c:33,104` conservative owner/DACL-to-mode audit. Native user-only acceptance and foreign-grant refusal pass; not a full AccessCheck evaluator | shim (implemented, limited) |
+| `cli/exec-action.c:506-565` | `isatty`, `termios`, `sigaction`, `raise` | no-echo password prompt, restore terminal on SIGINT/TERM/HUP | `compat.c:134,143`, `console.c:84,117,264`: console modes, secure UTF-8 line input, interrupt event. Native generated Ctrl+C/Ctrl+Break pass; SIGHUP is a SIGBREAK alias, true SIGHUP/SIGTERM interruption unsupported | shim (partial/stub) |
 | `cli/exec-action.c:442` | `strchr(arg, G_DIR_SEPARATOR)` | DB path vs. configured name | must also recognise `/` and drive-relative paths on Windows | port |
-| `aegis.c:387-391` | `libuuid` (`uuid_generate_random`, `uuid_unparse_lower`) | Aegis export slot UUID | `g_uuid_string_random()` (already used at `secret-schema.c:103`). The call site uses the binary API, so the shim must adapt it | shim |
-| `secret-schema.c` (whole file); GUI `otpclient-application.c` | `libsecret` | per-database password storage, probe, legacy migration | Credential Manager (storage) and/or DPAPI (encryption) are different building blocks; a shim must preserve attributes, async callbacks, cancellation, errors and secret-buffer ownership | shim |
+| `aegis.c:387-391` | `libuuid` (`uuid_generate_random`, `uuid_unparse_lower`) | Aegis export slot UUID | `compat.c:191,203`: GLib random UUID adapted to binary and lowercase text | shim (implemented) |
+| `secret-schema.c` (whole file); GUI `otpclient-application.c` | `libsecret` | per-database password storage, probe, legacy migration | `compat.c:429-511`, `compat/libsecret/secret.h`: explicit `G_IO_ERROR_NOT_SUPPORTED` stub with GTask callbacks/cancellation; no credential backend selected | shim (stub) |
 | `gsettings-common.c:70,79`, `settings-import-export.c:52,157,223` | GSettings default backend + installed schema; partial `GKeyFile` fallback | preferences, DB list, settings import | GLib's registry backend is the candidate, see `docs/windows-port.md`; not yet tested here | port |
-| `common.c:697`, `db-common.c:407`, `exec-action.c:361` | `g_get_user_{config,data}_dir`, `g_get_home_dir` | config and lock locations | same GLib calls | none |
+| `common.c:697`, `db-common.c:407`, `cli/exec-action.c:361` | `g_get_user_{config,data}_dir`, `g_get_home_dir` | config and lock locations | same GLib calls | none |
 | `cli/get-data.c:198-206`, `gui/otp-entry.c:489-576` | `time_t` → `long` for libcotp's timestamp argument | TOTP at a given time | on 64-bit Windows `long` is 32 bits, so there is a 2038 limit through libcotp's API. The CLI already rejects values above `LONG_MAX` | port |
 | `db-common.c:1690,1747` | legacy (v1/v2) native struct layout | read old DBs | v3 uses explicit big-endian; verify struct padding for v1/v2 on Windows | none (verify) |
 | `db-common.c:1409`, `db-common.h:26` | Argon2id 128 MiB × 4 lanes | key derivation | same libgcrypt KDF; check allocation failure and secure-memory behaviour on Windows | none (verify) |
-| `cli/main.c:42`, `version.h.in:10` | gettext, `LOCALE_DIR` | translations | gettext on Windows, relocatable locale dir | port |
+| `cli/main.c:42`, `version.h.in:10` | gettext, `LOCALE_DIR` | translations | cross gettext linked by `cmake/windows.cmake:19-22,40`; relocatable locale installation not implemented/verified | port (pending) |
 | `common.c:1`, `aegis.c:2`, `exec-action.c:1` | `_GNU_SOURCE`, `_DEFAULT_SOURCE` | expose non-ISO declarations | these macros do not supply missing APIs on Windows | shim |
 | `macros.h:3`, `cli/main.c:109` | `__attribute__((unused))`, `g_autoptr` | warnings, cleanup | fine with GCC/Clang (MinGW, clang); **not** with MSVC | none if MinGW/Clang |
+
+### Native follow-ups and explicit limits
+
+- Private exports: `private-file.c:67-82` now includes the UTF-16 terminator in the `FILE_RENAME_INFO` buffer and checks ACL retention after held-handle rename. `shim-check.c:186` covers explicit inheritable Users read ACEs, Unicode/extended-length paths and failure cleanup. Recorded Windows 11 results: 5/5 targeted runs, full suite 3/3, 10/10 CLI exports; second-user denial and crash durability are unverified.
+- Console: `console.c:295-355` dynamically resolves nonblocking `ReadConsoleInputExW` and waits on input plus an interrupt event; `compat.c:150-155` flushes both OS and shim buffers. Recorded native console checks pass (4/4 cases in three runs); generated Ctrl+C/Ctrl+Break abort in under 25 ms with exit 3 and restored mode. Physical keyboard Ctrl+C remains unverified.
+- Password-file refusal still says `chmod 600` (`cli/exec-action.c:149`). Windows needs DACL changes; see the `icacls` workaround in `docs/windows-build.md`. Correcting the message requires a separate upstream edit.
+- Every incomplete shim semantic carries a `WINDOWS-STUB` marker. In particular crash-dump prevention, real memlock budgeting, Secret Service, umask/chmod, true SIGHUP and directory fsync/durability are incomplete. These stubs are not native security guarantees.
 
 ## 2. `src/gui`
 
@@ -53,8 +60,8 @@ Every Linux/POSIX/desktop-specific coupling found in the tree (upstream 5.2.2), 
 | `otpclient-window.c:1893`; `gui-misc.c:257` | `g_application_send_notification` | notifications | GIO backend on Windows or a native toast adapter (unverified) | port |
 | `webcam-scanner.c:50-81` | zbar video processor (V4L, `/dev/video0` per comment at `:42`) | webcam QR scan | zbar's video backend on Windows is unverified; Media Foundation capture feeding a decoder is another option | port |
 | `qrcode-parser.c`, `qr-display-dialog.c:17`, `google-migration.c:92` | zbar, GdkPixbuf, libqrencode, protobuf-c | QR decode/encode, Google migration | same libraries (packaged in MSYS2, see `docs/windows-port.md`) | none |
-| `main.c:12` | gettext, `LOCALE_DIR` | translations | relocatable locale dir | port |
-| `otpclient-application.c:159` | `GApplication` default flags | single-instance activation | behaviour on Windows to be verified | port |
+| `src/gui/main.c:12` | gettext, `LOCALE_DIR` | translations | relocatable locale dir | port |
+| `otpclient-application.c:161` | `GApplication` default flags | single-instance activation | behaviour on Windows to be verified | port |
 | `gui-misc.c:46-52` | `g_get_user_*_dir`, GKeyFile `otpclient.cfg` | config file | same GLib calls | none |
 | `export-dialog.c:133`, `import-dialog.c:229`, `settings-dialog.c:593`, `otpclient-window.c:3182` | `GtkFileDialog`, native paths | file pickers | same APIs; check Unicode/UNC | none |
 | `otpclient-window.c:1867` | GdkClipboard | copy/clear | same APIs; ownership and delayed clear to be verified | none |
@@ -68,19 +75,19 @@ Every Linux/POSIX/desktop-specific coupling found in the tree (upstream 5.2.2), 
 
 | Where | Item | Note |
 |---|---|---|
-| `CMakeLists.txt:101-108` | `PkgConfig REQUIRED`; `uuid` and `libsecret` unconditional | `uuid` and `libsecret` stay required even with the GUI and provider off. They must be shimmed or made optional on Windows |
-| `CMakeLists.txt:21,26` | GNU-style warnings, `-O3`, `_FORTIFY_SOURCE=3` | fine with MinGW GCC/Clang; `_FORTIFY_SOURCE` depends on the libc; MSVC would need different flags |
-| `CMakeLists.txt:35,44,77,93` | `-fPIE/-pie`, probed hardening flags, ELF linker flags, sanitizers | ELF flags are already Linux-gated; PIE has only a compiler guard; sanitizers are not probed |
+| `CMakeLists.txt:101-108` | `PkgConfig REQUIRED`; `uuid` and `libsecret` unconditional | `uuid` and `libsecret` stay required even with the GUI and provider off. `cmake/windows/pkgconfig/{uuid,libsecret-1}.pc` satisfy metadata checks; the Windows compat layer supplies UUID symbols and unavailable Secret Service stubs, not real libuuid/libsecret libraries |
+| `CMakeLists.txt:21,26` | GNU-style warnings, `-O3`, `_FORTIFY_SOURCE=3` | Windows hook removes glibc FORTIFY options (`cmake/windows.cmake:24-25`); GNU warnings/`-O3` remain. MSVC is not supported by this toolchain |
+| `CMakeLists.txt:35,44,77,93` | `-fPIE/-pie`, probed hardening flags, ELF linker flags, sanitizers | ELF flags are already Linux-gated; the Windows hook removes `-fPIE/-pie` (`cmake/windows.cmake:25,29`). Windows sanitizers remain unverified |
 | `CMakeLists.txt:111-116` | GUI dependency set | `BUILD_GUI=OFF` allows a core/CLI spike without deciding the GUI strategy |
 | `CMakeLists.txt:153-253` | desktop file, man pages, completions, metainfo, `glib-compile-schemas`, `gtk4-update-icon-cache` | the icon-cache command is unconditional, including for CLI-only builds |
-| `src/gui/CMakeLists.txt:26`, `src/cli/CMakeLists.txt:6-9`, `src/search-provider/CMakeLists.txt`, `tests/CMakeLists.txt` | common sources compiled into every target | compat settings must reach all targets, tests included; even parser tests inherit OS-coupled `common.c` |
+| `src/gui/CMakeLists.txt:26`, `src/cli/CMakeLists.txt:6-9`, `src/search-provider/CMakeLists.txt`, `tests/CMakeLists.txt` | common sources compiled into every target | the Windows hook currently wires only CLI plus its optional shim/console checks; GUI/provider/upstream tests are rejected (`cmake/windows.cmake:12-16`). Even parser tests inherit OS-coupled `common.c` |
 | `tests/CMakeLists.txt:50-57,143` | integration tests are gated on Python, `dbus-daemon`, `glib-compile-schemas`, and `Xvfb` for GUI tests | a missing prerequisite omits those registrations with only a status message; absence is not a pass. Schema-dependent unit tests such as `settings_import` stay registered and can skip themselves |
 | `.ci/*.sh`, `.circleci/config.yml` | Bash, Make, `/usr`, source builds of libcotp (and libbaseencode, which nothing references) | Linux only; a Windows job needs its own scripts |
 
 ## Hypotheses that need real verification
 
-- **libsecret → Credential Manager/DPAPI.** Storage and encryption are different things; a replacement must preserve attribute identity, async callbacks, cancellation, error reporting and secret-buffer ownership.
-- **libuuid → `g_uuid_string_random`.** Plausible but not drop-in: the call site uses the binary API, so the shim has to adapt it. Check UUID version and lowercase output.
+- **libsecret → Credential Manager/DPAPI.** Only a service-unavailable stub exists. Storage and encryption are different things; a future backend must preserve attribute identity, async callbacks, cancellation, error reporting and secret-buffer ownership.
+- **UUID output.** The binary adapter and lowercase formatter are implemented (`compat.c:191,203`); dedicated UUID version/output assertions are not in the current Windows regression checks.
 - **`flock` → `LockFileEx`.** The code explicitly requires that two separately opened descriptors in one process exclude each other (`db-common.c:358`). Verify lock range, sharing flags, close behaviour and error mapping.
 - **GSettings on Windows.** No persistent Windows backend is selected anywhere in the repo, and the tests use the `memory` backend (`tests/test_settings_import.c`), which proves nothing about persistence. GLib's registry backend is the candidate; it is untested with this schema.
-- **Secure memory.** Pool sizing, page-lock guarantees and the 128 MiB Argon2id cost have not been looked at on Windows.
+- **Secure memory.** Native CLI DB operations use libgcrypt, but the fixed memlock budget does not prove pool/page-lock guarantees or Argon2id allocation-failure behaviour. Crash-dump prevention remains stubbed.

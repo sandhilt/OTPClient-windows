@@ -5,14 +5,18 @@ A highly secure GTK4/libadwaita application for managing TOTP and HOTP two-facto
 > **This is a fork: [`sandhilt/OTPClient-windows`](https://github.com/sandhilt/OTPClient-windows)**, a work-in-progress
 > Windows port of [paolostivanin/OTPClient](https://github.com/paolostivanin/OTPClient).
 >
-> **Status: planning.** There is no Windows build yet. The code is currently identical to upstream 5.2.2 and everything
-> below describes upstream behaviour on Linux. Only the documentation (`docs/`, `AGENTS.md`) and the Nix dev environment (`flake.nix`, `flake.lock`, `.envrc`) are new.
+> **Status: core + CLI build for x86_64 Windows UCRT**, with native Windows 11 smoke, private-export ACL/rename
+> and console regression checks recorded. The GUI strategy is **decided** (GTK4/libadwaita is ported to Windows
+> first, a UI-agnostic core comes later); the GUI port has not started. Secret storage, crash-dump prevention
+> and directory durability are incomplete. Fork-only code lives in `src/platform/windows/` and `cmake/`; upstream
+> source and build files are unchanged (only this notice and a `.gitignore` block were added). Everything below describes upstream behaviour on Linux.
 >
 > Goals: run on Windows, isolate the graphical and OS-specific parts behind small interfaces, and keep merging
 > upstream releases cheap by putting fork code in new directories instead of editing upstream files.
 >
 > - [`docs/architecture.md`](docs/architecture.md): how the code is organised today
 > - [`docs/windows-port.md`](docs/windows-port.md): seams, phases and the open decisions
+> - [`docs/windows-build.md`](docs/windows-build.md): build recipe, native execution, verification and known gaps
 > - [`docs/platform-dependencies.md`](docs/platform-dependencies.md): every Linux-only dependency, with file and line
 > - [`docs/upstream-sync.md`](docs/upstream-sync.md): rules for staying mergeable with upstream
 > - [`AGENTS.md`](AGENTS.md): guidance for AI coding agents working in this repository
