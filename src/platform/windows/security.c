@@ -85,12 +85,15 @@ otp_private_handle (HANDLE handle, PSID user)
     DWORD revision;
     gboolean private = GetSecurityDescriptorControl (descriptor, &control, &revision) &&
         (control & SE_DACL_PROTECTED) && owner && EqualSid (owner, user) &&
-        acl && acl->AceCount == 1;
+        acl && IsValidAcl (acl) && acl->AceCount == 1;
     if (private) {
         ACCESS_ALLOWED_ACE *ace;
         private = GetAce (acl, 0, (void **) &ace) &&
             ace->Header.AceType == ACCESS_ALLOWED_ACE_TYPE &&
+            ace->Header.AceSize >= sizeof (ACCESS_ALLOWED_ACE) &&
             ace->Header.AceFlags == 0 && ace->Mask == FILE_ALL_ACCESS &&
+            IsValidSid (&ace->SidStart) && GetLengthSid (&ace->SidStart) <=
+                ace->Header.AceSize - G_STRUCT_OFFSET (ACCESS_ALLOWED_ACE, SidStart) &&
             EqualSid (&ace->SidStart, user);
     }
     LocalFree (descriptor);

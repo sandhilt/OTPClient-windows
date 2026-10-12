@@ -28,6 +28,69 @@ These Windows implementations compiled, but their runtime semantics are unverifi
 
 ### Shim review fixes (2026-10-12)
 
+#### Native Windows rename regression follow-up
+
+Native Windows 11 reported a garbage filename suffix and errors 3/123 when the
+parent had an explicit inheritable Users read ACE. The confirmed buffer issue
+was `offsetof(FILE_RENAME_INFO, FileName) + name_bytes`, with no UTF-16 NUL.
+That is the suspected cause, **not a proven explanation of the ACE correlation**:
+[Microsoft's FILE_RENAME_INFO page](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_rename_info)
+calls `FileName` NUL-terminated but also says a terminator is not required under
+`FileNameLength`. The revised buffer uses `sizeof(FILE_RENAME_INFO) + name_bytes`,
+zeroed padding and an explicit NUL; `FileNameLength` still excludes NUL. The
+character count comes from `GetFullPathNameW`, with checked capacity/byte limits,
+rather than `wcslen`. The temporary uses that same absolute path.
+
+The installed MinGW header has the conditional Flags/ReplaceIfExists union.
+A cross-compiled layout probe confirmed 2-byte WCHAR, 24-byte struct and offsets
+0/8/16/20 for ReplaceIfExists/RootDirectory/FileNameLength/FileName on this Win64
+toolchain. Zero initialization, `ReplaceIfExists = TRUE` and
+`RootDirectory = NULL` match `FileRenameInfo`. Creation already requested `DELETE`, `READ_CONTROL` and
+`GENERIC_WRITE`, with share mode 0 and `CREATE_NEW`. `FileRenameInfoEx` with
+REPLACE_IF_EXISTS/POSIX_SEMANTICS was considered but not adopted: replacing open
+destinations is outside this fix and its native behavior has not been tested.
+The held object's protected user-only DACL/owner is verified before writes and
+again after rename. ACL/ACE/SID bounds are checked. Failures request deletion
+on that handle; cleanup errors are included in the returned error. If post-rename
+verification fails, the renamed object is discarded (the old target has already
+been replaced); no successful export is reported. OS cleanup failure can still
+leave an artifact, and parent-directory durability remains unverified.
+
+`/windows/private-inheritable-acl` installs and confirms an explicit Users
+`(OI)(CI)` read ACE using `WinBuiltinUsersSid`, `SetEntriesInAclW` and
+`SetNamedSecurityInfoW`. In each of a normal directory and an extended-length
+path over `MAX_PATH`, 20 distinct names are created and replaced (80 successful
+closes expected), including accented/CJK/supplementary Unicode. Win32 enumeration
+checks the exact sole filename and absence of temporaries; reads check exact
+bytes; an independent security query checks owner, protected DACL and its sole
+non-inherited full-access user ACE. A rename onto an existing directory must
+fail and remove its temporary in both paths.
+
+This revision cross-built CLI and shim checks in `/tmp/otp-win-build2` without
+compiler/linker warnings. **No Windows executable could be run in this sandbox.**
+Native NTFS retest is required to confirm the cause/fix, ACL retention, long-path
+handling and failure cleanup. Second-user access denial, other filesystems,
+minifilters and crash durability remain gaps. Rebuild using the exported shell
+recipe below, substituting `/tmp/otp-win-build2` for `/tmp/otp-win-build` (no Nix).
+Copy the new executable into a Windows folder with the staged runtime DLLs and
+run in PowerShell:
+
+```powershell
+.\otp-windows-shim-check.exe --tap -p /windows/private-inheritable-acl
+if ($LASTEXITCODE -ne 0) { throw "Inheritable ACL regression failed" }
+.\otp-windows-shim-check.exe --tap
+if ($LASTEXITCODE -ne 0) { throw "Windows shim checks failed" }
+```
+
+**Native verification (2026-10-12, Windows 11 via WSL interop):** the rebuilt
+`otp-windows-shim-check.exe` passed `/windows/private-inheritable-acl` 5/5 runs and
+the full suite (3/3) with exit 0. A manual repro (directory with an explicit
+`(OI)(CI)` Users read ACE, 10 private exports via `otpclient-cli.exe`) gave rc=0
+every time, with the exact file name, no `.otp-private-*` leftovers and an
+owner-only DACL on the exported file. The previous binary was not re-run as a
+baseline, so this shows the fix works but does not re-demonstrate the old failure.
+Still unverified: second-user access denial, other filesystems, crash durability.
+
 The current revision rebuilt the CLI and `otp-windows-shim-check.exe` from clean
 objects with no compiler/linker warnings. The native Linux GUI, CLI, provider and
 tests compiled; all 36 tests were registered and the 21 non-session tests passed.
