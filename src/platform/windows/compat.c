@@ -471,6 +471,16 @@ secret_fail_async (GCancellable *cancellable, GAsyncReadyCallback callback, gpoi
 }
 
 void
+secret_password_store (const SecretSchema *schema, const gchar *collection,
+    const gchar *label, const gchar *password, GCancellable *cancellable,
+    GAsyncReadyCallback callback, gpointer user_data, ...)
+{
+    /* WINDOWS-STUB: fail asynchronously without retaining/copying secrets. */
+    (void) schema; (void) collection; (void) label; (void) password;
+    secret_fail_async (cancellable, callback, user_data);
+}
+
+void
 secret_password_lookup (const SecretSchema *schema, GCancellable *cancellable,
     GAsyncReadyCallback callback, gpointer user_data, ...)
 {

@@ -1,6 +1,6 @@
 # Windows port plan
 
-Status: **core + CLI build for x86_64 UCRT**, with native Windows 11 CLI, ACL/rename and console checks recorded (see `docs/windows-build.md`). The GUI strategy is decided (two GUI phases, see [Decisions](#decisions-2026-10-12)); the GUI port has not started. Implemented shims are identified below; unimplemented Windows API candidates remain hypotheses, not decisions.
+Status: **core + CLI build for x86_64 UCRT**, with native Windows 11 CLI, ACL/rename and console checks recorded (see `docs/windows-build.md`). GUI phase 1 has a source audit, deferred compatibility wiring and explicit compile stubs; the GUI has not been compiled or run with that wiring. The first MSYS2 GUI probe omitted the hook and failed before linking. The two-phase strategy is decided (see [Decisions](#decisions-2026-10-12)); unimplemented Windows API candidates remain hypotheses, not decisions.
 
 ## Goals
 
@@ -26,7 +26,7 @@ See `docs/architecture.md`. The short version:
 
 Lowest merge friction, because upstream call sites do not change. Risk: shims hide semantic differences (see "Hard problems"), so each one needs tests.
 
-**B. Ports (explicit interfaces) where behaviour genuinely differs.** For things that do not map onto a POSIX call: tray icon, autostart, session lock/unlock, settings storage, per-user paths. Define a small C interface per concern in `src/platform/`, with a Linux implementation that wraps the code upstream already has and a Windows implementation. Upstream call sites change by a line or two to call the interface.
+**B. Ports (explicit interfaces) where behaviour genuinely differs.** For things that do not map onto a POSIX call: tray icon, autostart, session lock/unlock, settings storage, per-user paths. Prefer a Windows alternative implementing an existing leaf-file API, selected by the deferred CMake hook with no upstream edit. Where behaviour is embedded in an application/window file, define a small C interface in `src/platform/`, with a Linux implementation wrapping today's code unchanged and a Windows implementation; make only the necessary routing edit. The source-substitution tradeoffs are listed in `docs/platform-dependencies.md`.
 
 ## Layout (fork-only; existing and planned)
 
@@ -35,16 +35,16 @@ src/platform/
   platform.h              planned umbrella header
   secrets.h  settings.h  paths.h  autostart.h  tray.h  session-lock.h  hardening.h (planned)
   linux/                  planned thin wrappers over today's code, no behaviour change
-  windows/                compat.c, console.c, security.c/.h, private-file.c, shim-check.c, console-check.c
+  windows/                compat.c, console.c, security.c/.h, private-file.c, gui-compat.c, shim-check.c, console-check.c
   windows/compat/         existing shim headers (strategy A)
 cmake/
   windows-ucrt.cmake      existing x86_64 UCRT cross toolchain
-  windows.cmake           existing deferred CLI compatibility wiring
+  windows.cmake           deferred CLI + GUI compatibility wiring
   windows/pkgconfig/     existing uuid/libsecret-1 metadata shims
 packaging/windows/        planned installer, manifest, icons
 ```
 
-Nothing under `src/common`, `src/gui` or `src/cli` moves. Linux and Windows builds keep using the existing source globs. There is no `otpclient-core` target or `cmake/otpclient-core.cmake`: the Windows hook attaches shims to the upstream CLI target, which compiles all common sources. Architecture selection lives in the toolchain file, not in C sources; scope is x64 first, with the stat ABI shim selected by `_WIN64`.
+Nothing under `src/common`, `src/gui` or `src/cli` moves. Both builds currently use the existing source globs. There is no `otpclient-core` target or `cmake/otpclient-core.cmake`: the Windows hook attaches shims to the enabled upstream CLI/GUI targets, each of which compiles common sources. Future Windows leaf-source substitutions can filter only the GUI target's `SOURCES` in the deferred hook; no substitutions are implemented yet. Architecture selection lives in the toolchain file, not in C sources; scope is x64 first, with the stat ABI shim selected by `_WIN64`.
 
 ## Seams (implemented shims and remaining candidates)
 
@@ -61,12 +61,13 @@ Nothing under `src/common`, `src/gui` or `src/cli` moves. Linux and Windows buil
 | Settings | GSettings | GLib registry backend first (untested); keyfile backend considered for the portable zip (decision 8) | B (`settings.h`) |
 | Config/data dirs | `g_get_user_*_dir()` | same GLib calls work on Windows (`%APPDATA%`) | none |
 | CLI password prompt | `termios`, `isatty`, `sigaction` | console modes and event-driven secure UTF-8 line input implemented; native generated Ctrl+C/Ctrl+Break pass, true SIGHUP/SIGTERM interruption unsupported | A |
+| GUI Unix signals | `glib-unix.h`, three `g_unix_signal_add` calls | explicit warning + source ID 0 stub; no console handler installed, no termination cleanup guarantee | A (stub) |
 | Tray | StatusNotifierItem over GDBus | `Shell_NotifyIcon` | B (`tray.h`) |
 | Autostart | XDG `autostart/*.desktop` (Background portal on Flatpak) | `HKCU\...\Run` | B (`autostart.h`) |
 | Session lock | `org.*.ScreenSaver` D-Bus | `WTSRegisterSessionNotification` | B (`session-lock.h`) |
-| Webcam QR scan | zbar V4L | zbar has no V4L on Windows; needs another capture path | B; out until requested (decision 9) |
+| Webcam QR scan | zbar processor default video backend | Windows capture unverified; no direct V4L call in GUI code | B; out until requested (decision 9), action still present |
 | Search provider | GNOME / KRunner D-Bus | not applicable; do not build on Windows | none |
-| Flatpak / portals | `IS_FLATPAK` | not applicable | none |
+| Flatpak / portals | Background portal under `IS_FLATPAK`; unguarded document-path diagnostic in application | disable Flatpak; document predicate still needs a routing edit. GUI `getuid` sentinel is compile-only, not an identity adapter | none for excluded portal; A stub + B pending predicate |
 
 The exhaustive, file-and-line version of this table is `docs/platform-dependencies.md`.
 
@@ -106,7 +107,7 @@ Other sources:
 Consequences for the plan:
 
 - Option 1 (GTK4 stays) is technically feasible at the dependency level; the open questions are quality (look and feel, GPU quirks) and the missing OS integrations (tray, autostart, lock), not whether the libraries exist.
-- The core + CLI toolchain spike is complete through the Nix MinGW-w64 UCRT cross shell, not MSYS2 or MSVC. The Windows hook supplies metadata for the unconditional `uuid`/`libsecret` checks (`CMakeLists.txt:107-108`) and compat headers for Unix APIs. A GTK4/libadwaita build still needs a separate dependency/window spike; package availability alone does not settle the GUI decision.
+- The core + CLI cross toolchain spike is complete through the Nix MinGW-w64 UCRT shell. The separate GUI dependency tree is portable MSYS2 UCRT64. Local `.pc` files at `C:\Users\hilt\AppData\Local\otp-dev` were read on 2026-10-12: GTK 4.24.1, libadwaita 1.10.0, GLib 2.90.1, libcotp 4.1.0 in `prefix`. These differ from the earlier package-index snapshot above; metadata inspection is not execution proof. MSYS2 packages real libsecret, but Decision 5 still selects the fork's unavailable shim and metadata. UUID comes from the existing GLib-based shim, not a libuuid package.
 
 ## GUI decision: what "isolate the GUI" means (decided 2026-10-12)
 
@@ -114,13 +115,27 @@ Consequences for the plan:
 
 **Option 1 — keep GTK4 / libadwaita, port it to Windows (GUI phase 1).**
 - Pros: the GUI stays one code base shared with upstream, so most upstream GUI changes still merge; far less new code.
-- Cons: not a native look; GTK4 + libadwaita on Windows must be verified in the MSYS2 UCRT64 toolchain (not built yet); the missing UI/domain boundary stays, so the "clean architecture" gain is limited to the OS seams; the churn hotspots (`otpclient-window.c`, `otpclient-application.c`) need edits wherever they touch GSettings, tray, lock or Unix signals. libsecret call sites should not need edits if the strategy-A shim is used.
+- Cons: not a native look; GUI compile/link and runtime still need verification with the MSYS2 UCRT64 tree. The missing UI/domain boundary stays. Tray/autostart can use source substitutions; Unix signals/libsecret use shims without hotspot edits. Embedded path diagnostics and capability rows may still need small routing edits; GSettings calls themselves are portable.
 
 **Option 2 — extract a UI-agnostic core (GUI phase 2); a separate native Windows UI on top is not decided.**
 - Pros: real separation; the core is testable without any UI; the GUI can be replaced.
 - Cons: a whole new UI to build and maintain; the existing GUI cannot be reused, so the fork stops benefiting from upstream GUI work; the logic currently embedded in `otpclient-window.c` and the dialogs has to be redefined as a core facade, which is where the upstream-merge cost lives.
 
-Earlier recommendation, still the order of work: finish the remaining Phase 2 verification/security work before the GUI spike. The owner's decision was made with the working Windows CLI and core in hand.
+The owner's decision was made with the working Windows CLI and core in hand. Remaining core security/runtime checks continue alongside the GUI build probe; successful GUI compilation cannot close those checks.
+
+## GUI phase 1: ordered work from the source audit
+
+1. **Repeat the compile/link probe with the hook.** Native UCRT64 CMake must receive `-DCMAKE_PROJECT_INCLUDE=<repo>/cmake/windows.cmake` and `OTP_WINDOWS_GETTEXT_ROOT=/ucrt64` in Windows path syntax; do not use the Nix cross toolchain for this tree. Set GUI on, CLI/provider/upstream tests/Flatpak off and tray off. Use both fork pkg-config metadata shims first. The deferred hook removes PIE/glibc FORTIFY options, adds compat includes/forced header/implementation definitions, four common adapter sources, gettext and `advapi32` to both possible application targets. GUI additionally gets `gui-compat.c`; the actual CMake target is `OTPClient`, output `otpclient.exe`. The `51-gui-build-with-hook.sh` probe uses Ninja `-k 0`, logs selected package metadata and source hashes, retains full diagnostics and builds the optional core checks without executing them. Its PASS means compile/link only.
+2. **Resolve fresh diagnostics before changing desktop behaviour.** The previous 13 failed units were six common units and seven GUI units: missing common wiring plus GUI `glib-unix.h`/`explicit_bzero`. The audit additionally found the unguarded `getuid` at application `:611` and missing async `secret_password_store` at `:424,860,1782`. Common zeroing now reaches every GUI source; async store uses the existing unsupported GTask completion without copying secrets. GUI signal registration warns and returns 0; UID warns and returns `G_MAXUINT`. Both are `WINDOWS-STUB`, not working signal/portal integrations. No new unistd/sys headers or `G_OS_UNIX` definitions are needed from the GUI scan. Compiler/linker warnings and target command lines still require the native probe.
+3. **Make milestone 1's unavailable integrations honest.** Tray is already disabled by CMake and the upstream no-tray startup path refuses hidden launch (`otpclient-application.c:1402-1406`). Implement a future `autostart-win.c` selected by target-source swap, initially reporting unsupported and preserving rollback/callback semantics: today's host branch at `autostart.c:715` incorrectly reports support on Windows and may write `.desktop` files. Preserve manual lock/unlock and inactivity while excluding desktop/session/suspend watchers; `lock-app.c:403-507` shares private state with the portable functionality, so do not simply remove it or no-op all lock methods. A whole-file alternative is possible but increases maintenance cost. Webcam stays out per Decision 9: consider a same-API unsupported source alternative and a capability route for `window:5409` / `ui/window.ui:293`. Search-provider settings rows at `settings-dialog.c:861-895` remain after the provider target is excluded and also need a capability policy. These ports/capability edits are planned, not applied.
+4. **Route the document-portal predicate.** `db_path_is_document_portal` at application `:600-612` is compiled even with Flatpak off. Replace its body with a platform predicate, keep the Linux implementation unchanged and return false on Windows; then retire the compile-only UID stub. A call replacement at `:650` alone does not remove the helper's missing-UID dependency. Do not replace the entire application file for this small concern.
+5. **Stage a runnable, relocatable tree and exercise the GUI.** Supply GTK/libadwaita and transitive DLLs, image loaders, icons/resources and a compiled GSettings schema without invoking untested upstream install rules. First test ordinary launch/close, unlock/change-password, DB reopen, import/export and image QR/display (no camera). Verify Unicode/space/UNC paths, clipboard ownership/timeout, secret-service refusal and absence of hidden startup. Locale lookup at `main.c:12` still uses the configured install directory and needs relocation verification/routing. Do not claim manual/inactivity/session-lock or private-file guarantees solely from launching a window.
+6. **Test settings and settle policy with the owner.** Exercise registry persistence across launches and `changed` notifications across GUI/CLI processes; decide whether the portable zip needs a keyfile backend. Test two launches and activation using application `:161` default flags; single-instance policy is still OPEN and must not be replaced silently. Notifications at `window:1893` / `gui-misc:257` require backend delivery checks before choosing a toast adapter. Decide path identity (case/separators/aliases) before changing exact string matching or future secret keys. Address the 32-bit `long` TOTP limit: current-code casts at `otp-entry.c:489,492` lack the next-code path's `LONG_MAX` guard (`:567`).
+7. **Add desktop parity after milestone 1, then package.** Evaluate source swaps for tray/autostart first; WTS session and power notifications afterwards. Proposed APIs remain hypotheses until selected/tested. A GUI signal bridge can stay a shim with no upstream edit, but must marshal callbacks to the main context and handle shutdown/source lifetime rather than invoke GTK from a console control thread. Continue native core security and Linux regression checks. Portable zip comes first; MSI/MSIX/signing remain later decisions.
+
+The complete per-file audit, source-swap candidates and minimal routing edits are in `docs/platform-dependencies.md`. This change implements compile wiring/shims only: no source swap, native desktop backend, instance policy, settings backend or capability UI edit is selected or implemented.
+
+Static validation on 2026-10-12: all 27 GUI C files are named in the audit; all seven libsecret symbols called directly by the GUI have shim declarations/definitions; the probe passes `bash -n`; `git diff --check` passes and upstream source/build paths have no working-tree diff. CMake configuration, compilation, Linux regression tests, Windows executable/interop and runtime checks were not performed for this change in the restricted environment. Recorded earlier CLI results do not validate the new wiring.
 
 ## Decisions (2026-10-12)
 
@@ -129,7 +144,7 @@ Recorded from the project owner. "Decided" means the choice is made; "not starte
 | # | Topic | Decision | Status |
 |---|---|---|---|
 | 1 | Finish line | Milestone 1: functional GUI on Windows without desktop integration (tray, autostart, session lock). Final goal: GUI with feature parity plus an installer. The Windows CLI and core already work (`docs/windows-build.md`). | decided |
-| 2 | GUI strategy | Two GUI phases. GUI phase 1 ports GTK4 / libadwaita to Windows, with dependencies from a portable MSYS2 UCRT64 tree built under a throwaway folder (no installer, no PATH changes). The Nix cross shell stays for core and CLI: in nixpkgs, libadwaita, gdk-pixbuf and zbar are marked unix-only, and a gtk4 cross build pulls in X11 and GStreamer. That was read from nixpkgs, not proven by a build. GUI phase 2 extracts a UI-agnostic core later. New port interfaces use plain C types at the seams. | decided; not started |
+| 2 | GUI strategy | Two GUI phases. GUI phase 1 ports GTK4 / libadwaita to Windows, with dependencies from a portable MSYS2 UCRT64 tree built under a throwaway folder (no installer, no PATH changes). The Nix cross shell stays for core and CLI: in nixpkgs, libadwaita, gdk-pixbuf and zbar are marked unix-only, and a gtk4 cross build pulls in X11 and GStreamer. That was read from nixpkgs, not proven by a build. GUI phase 2 extracts a UI-agnostic core later. New port interfaces use plain C types at the seams. | decided; GUI compile wiring/audit added, build with hook pending |
 | 3 | Upstream edits | One-line edits that route into `src/platform/` are allowed and must be listed in `docs/upstream-sync.md`. First candidate: the `-p` refusal message in `src/cli/exec-action.c`. | decided; edit not made |
 | 4 | Publishing | Feature branches, pull requests inside the fork for review, then merge to the fork's `master`. No upstream PRs for now. Nothing is pushed until the owner asks. | decided |
 | 5 | Secret storage on Windows | The libsecret shim stays "unavailable" through milestone 1. Credential Manager is considered afterwards; it changes the threat model, so that choice is made explicitly. | decided; Credential Manager not started |
@@ -145,7 +160,7 @@ Recorded from the project owner. "Decided" means the choice is made; "not starte
 0. **Toolchain spike — done for core + CLI.** Nix `pkgsCross.ucrt64` supplies MinGW-w64, GLib/GIO, libgcrypt, Jansson, libcotp and gettext. Windows-only overrides clear Jansson's ELF `postFixup`, add libgcrypt `--disable-asm`, guard libcotp's ELF linker flags and stage its DLL into `bin`; see `docs/windows-build.md`. GUI dependencies are not part of this cross shell.
 1. **Core builds on Windows — done in the CLI target.** All common sources compile with fork-only shims and unchanged DB v3 format. The optional shim checks run natively; the upstream pure-logic ctest suite remains unwired/unverified on Windows. No standalone core library or Linux port interfaces have been added.
 2. **CLI on Windows — mostly done.** Native Windows 11 import/list/show/plain exports, password-file ACL acceptance/refusal, protected export rename and console checks are recorded. Generated Ctrl+C/Ctrl+Break abort without Enter in under 25 ms (exit 3, mode restored); backspace, Unicode, typeahead flushing, successive prompts and piped input pass. Secret Service, crash-dump prevention, real memlock budgeting, umask/chmod and directory durability remain stubs; persistent settings, full encrypted AuthPro round-trip and physical keyboard Ctrl+C remain unverified. The verification matrix is in `docs/windows-build.md`.
-3. **GUI on Windows (GUI phase 1, milestone 1) — not started.** Port GTK4 / libadwaita from a portable MSYS2 UCRT64 tree, built without an installer or PATH changes under a throwaway folder. Milestone 1 is a functional GUI without tray, autostart or session lock.
+3. **GUI on Windows (GUI phase 1, milestone 1) — audit/compile wiring in progress.** Portable MSYS2 UCRT64 dependencies and an initial no-hook failed build probe exist. Repeat with the deferred hook and explicit GUI stubs, then follow the ordered steps above. Milestone 1 remains a functional GUI without tray, autostart or session lock; compile wiring alone does not deliver it.
 4. **Desktop integration (final goal) — not started.** Tray and autostart first, then session lock and suspend lock. Single instance is not covered by the decisions and stays undecided.
 5. **Packaging and CI — not started.** Milestone 1 ships a portable zip with no code signing. The final goal adds an MSI/MSIX installer and signing. The CI plan is Decision 10; no Windows packaging path or workflow exists yet. The sync routine is documented.
 

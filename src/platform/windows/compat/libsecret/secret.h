@@ -15,6 +15,7 @@ gchar *secret_password_lookup_sync (const SecretSchema *, GCancellable *, GError
 gboolean secret_password_clear_sync (const SecretSchema *, GCancellable *, GError **, ...);
 void secret_password_lookup (const SecretSchema *, GCancellable *, GAsyncReadyCallback, gpointer, ...);
 void secret_password_clear (const SecretSchema *, GCancellable *, GAsyncReadyCallback, gpointer, ...);
+void secret_password_store (const SecretSchema *, const gchar *, const gchar *, const gchar *, GCancellable *, GAsyncReadyCallback, gpointer, ...);
 gchar *secret_password_lookup_finish (GAsyncResult *, GError **);
 gboolean secret_password_clear_finish (GAsyncResult *, GError **);
 gboolean secret_password_store_finish (GAsyncResult *, GError **);

@@ -2,7 +2,7 @@
 
 Every Linux/POSIX/desktop-specific coupling found in the tree (upstream 5.2.2), with the Windows candidate and the kind of seam it needs. Produced by two read-only audits (not a proof of completeness; re-grep after every upstream merge) (`src/common` + CLI + build; `src/gui` + search provider), then spot-checked against the code. Line numbers drift; re-run `git grep` before relying on them.
 
-**Reading the table.** The "Windows candidate" column distinguishes implemented core/CLI shims, explicit stubs and remaining hypotheses. Native Windows 11 results are recorded in `docs/windows-build.md`; compilation is not runtime proof. Shim paths below are relative to `src/platform/windows/`; upstream file:line pointers were rechecked on 2026-10-12. GUI candidates remain unimplemented. "Seam": **shim** = a Windows replacement for an existing include/symbol, no call-site edit; **port** = an explicit interface in `src/platform/` plus a small call-site edit; **none** = works as is (GLib/portable) or is excluded.
+**Reading the table.** The "Windows candidate" column distinguishes implemented shims, explicit stubs and remaining hypotheses. Native core/CLI Windows 11 results are recorded in `docs/windows-build.md`; compilation is not runtime proof. Shim paths below are relative to `src/platform/windows/`; upstream file:line pointers were rechecked on 2026-10-12. GUI compile wiring and stubs exist but have not been compiled or run with the hook. "Seam": **shim** = a Windows replacement for an existing include/symbol, no call-site edit; **port** = an explicit platform implementation, with either a small call-site edit or a CMake source substitution; **none** = portable or excluded.
 
 ## 1. `src/common` and the CLI (compiled into every target)
 
@@ -10,7 +10,7 @@ Every Linux/POSIX/desktop-specific coupling found in the tree (upstream 5.2.2), 
 |---|---|---|---|---|
 | `common.c:100,112`; `cli/main.c:231` | `getrlimit/setrlimit(RLIMIT_MEMLOCK)` | size libgcrypt's secure-memory pool; the CLI aborts if the query fails | stub in `compat/sys/resource.h:11,18`: fixed 64 MiB budget, `setrlimit` → `ENOSYS`; not a measured page-lock limit | shim (stub) |
 | `common.c:126,130` | `prctl(PR_SET_DUMPABLE)`, `RLIMIT_CORE` | stop crash dumps containing secrets | stubs in `compat/sys/prctl.h:6` and `compat/sys/resource.h:18` return `ENOSYS`; upstream warns, dump prevention is not implemented | shim (stub) |
-| `common.c:185`, `db-common.c:179`, `authpro.c:274`; `gui/*`, `search-provider.c:212` | `explicit_bzero` (with `_DEFAULT_SOURCE`) | wipe passwords and keys | `compat.c:13`: `SecureZeroMemory` | shim (implemented) |
+| `common.c:185`, `db-common.c:179`, `authpro.c:274`; GUI sites listed below, `search-provider.c:212` | `explicit_bzero` (with `_DEFAULT_SOURCE`) | wipe passwords and keys | `compat.c:13`: `SecureZeroMemory`; forced header now attached to both CLI and GUI | shim (implemented; GUI build unverified) |
 | `parse-uri.c:234`, `settings-import-export.c:136` | `strnlen` | bound input length | MinGW CRT declaration/symbol resolves in the cross build; no custom shim | none (compiled) |
 | `cli/exec-action.c:475` | `getline`, `ssize_t` | read a DB path from stdin | `compat.c:170`: line reader; `ssize_t` supplied by the MinGW headers | shim (implemented) |
 | `common.c:777-792` | `open(O_NOFOLLOW\|O_CLOEXEC)`, `fstat`, `S_ISREG` | open an import file once, refuse symlinks and non-regular files | `compat.c:28,47`: UTF-16 `CreateFileW`, reparse/type checks and binary non-inheritable CRT descriptor; `security.c:104` supplies DACL-aware fstat | shim (implemented) |
@@ -24,13 +24,13 @@ Every Linux/POSIX/desktop-specific coupling found in the tree (upstream 5.2.2), 
 | `cli/exec-action.c:506-565` | `isatty`, `termios`, `sigaction`, `raise` | no-echo password prompt, restore terminal on SIGINT/TERM/HUP | `compat.c:134,143`, `console.c:84,117,264`: console modes, secure UTF-8 line input, interrupt event. Native generated Ctrl+C/Ctrl+Break pass; SIGHUP is a SIGBREAK alias, true SIGHUP/SIGTERM interruption unsupported | shim (partial/stub) |
 | `cli/exec-action.c:442` | `strchr(arg, G_DIR_SEPARATOR)` | DB path vs. configured name | must also recognise `/` and drive-relative paths on Windows | port |
 | `aegis.c:387-391` | `libuuid` (`uuid_generate_random`, `uuid_unparse_lower`) | Aegis export slot UUID | `compat.c:191,203`: GLib random UUID adapted to binary and lowercase text | shim (implemented) |
-| `secret-schema.c` (whole file); GUI `otpclient-application.c` | `libsecret` | per-database password storage, probe, legacy migration | `compat.c:429-511`, `compat/libsecret/secret.h`: explicit `G_IO_ERROR_NOT_SUPPORTED` stub with GTask callbacks/cancellation; no credential backend selected | shim (stub) |
+| `secret-schema.c` (whole file); GUI `otpclient-application.c` | `libsecret` | per-database password storage, probe, legacy migration | `compat.c:429-521`, `compat/libsecret/secret.h`: explicit `G_IO_ERROR_NOT_SUPPORTED` stub with GTask callbacks/cancellation; no credential backend selected | shim (stub) |
 | `gsettings-common.c:70,79`, `settings-import-export.c:52,157,223` | GSettings default backend + installed schema; partial `GKeyFile` fallback | preferences, DB list, settings import | GLib's registry backend is the candidate, see `docs/windows-port.md`; not yet tested here | port |
 | `common.c:697`, `db-common.c:407`, `cli/exec-action.c:361` | `g_get_user_{config,data}_dir`, `g_get_home_dir` | config and lock locations | same GLib calls | none |
 | `cli/get-data.c:198-206`, `gui/otp-entry.c:489-576` | `time_t` → `long` for libcotp's timestamp argument | TOTP at a given time | on 64-bit Windows `long` is 32 bits, so there is a 2038 limit through libcotp's API. The CLI already rejects values above `LONG_MAX` | port |
 | `db-common.c:1690,1747` | legacy (v1/v2) native struct layout | read old DBs | v3 uses explicit big-endian; verify struct padding for v1/v2 on Windows | none (verify) |
 | `db-common.c:1409`, `db-common.h:26` | Argon2id 128 MiB × 4 lanes | key derivation | same libgcrypt KDF; check allocation failure and secure-memory behaviour on Windows | none (verify) |
-| `cli/main.c:42`, `version.h.in:10` | gettext, `LOCALE_DIR` | translations | cross gettext linked by `cmake/windows.cmake:19-22,40`; relocatable locale installation not implemented/verified | port (pending) |
+| `cli/main.c:42`, `version.h.in:10` | gettext, `LOCALE_DIR` | translations | gettext linked by `otp_windows_apply_compat` in `cmake/windows.cmake`; relocatable locale installation not implemented/verified | port (pending) |
 | `common.c:1`, `aegis.c:2`, `exec-action.c:1` | `_GNU_SOURCE`, `_DEFAULT_SOURCE` | expose non-ISO declarations | these macros do not supply missing APIs on Windows | shim |
 | `macros.h:3`, `cli/main.c:109` | `__attribute__((unused))`, `g_autoptr` | warnings, cleanup | fine with GCC/Clang (MinGW, clang); **not** with MSVC | none if MinGW/Clang |
 
@@ -43,29 +43,72 @@ Every Linux/POSIX/desktop-specific coupling found in the tree (upstream 5.2.2), 
 
 ## 2. `src/gui`
 
+Audit scope: all 27 `.c` files, their headers, UI/resource files and GUI CMake, excluding tests. These are static findings at `170a787`; no Windows GUI executable was run. The earlier MSYS2 probe omitted `CMAKE_PROJECT_INCLUDE`: its common-source failures were missing-wiring failures, not evidence that the existing core shims fail. It reported 13 failed translation units. Adding the hook still requires a fresh compile/link probe.
+
+### Compile surfaces and desktop runtime dependencies
+
+All paths in these tables are relative to `src/gui/`. GDBus types/functions are portable GIO APIs; Linux bus services/protocols are runtime dependencies, not missing C declarations.
+
 | Where | Linux API | Purpose | Windows candidate | Seam |
 |---|---|---|---|---|
-| `otpclient-application.c:3,1480-1482` | `<glib-unix.h>` (unconditional) and `g_unix_signal_add` for SIGINT/SIGTERM/SIGHUP | quit cleanly on signals | guard the include; `g_unix_signal_add` has no Windows form, so use `SetConsoleCtrlHandler` or another portable mechanism | port |
-| `otpclient-application.c:366,384,424,860,1006-1064`; `otpclient-window.c:835`; `settings-dialog.c:186` | `libsecret` store/lookup/clear and a round-trip probe | remember DB password | as above | shim |
-| `otpclient-application.c:1432`; `otpclient-window.c:5277`; `settings-dialog.c:932-965` | GSettings, `changed` signals | preferences; cross-consumer sync | needs a backend with change notification, including across processes | port |
-| `otpclient-application.c:605-611` | `/doc/`, `/run/user/%u/doc/`, `getuid` | detect Flatpak document-portal paths | no Windows analogue | port (or drop) |
-| `gui-misc.c:152`, `otpclient-window.c:3967`, `otpclient-application.c:431` | exact string equality on paths as DB identity and secret key | identify a DB | needs a Windows path-identity policy (case, separators, drive/UNC, aliases) | port |
-| `tray.c:15,606,709,1020` | StatusNotifierItem/Watcher, `com.canonical.dbusmenu`, `getpid` | tray icon and menu | `Shell_NotifyIconW` with a native menu/event bridge | port |
-| `autostart.c:646,844,860` | XDG `autostart/*.desktop` | login-time launch | `HKCU\…\Run` or Startup shortcut | port |
-| `autostart.c:662-669,836` | `INSTALL_BINDIR`, bare `otpclient`, desktop-entry quoting | the command to launch | runtime `.exe` location and Windows quoting | port |
-| `autostart.c:52,614` | Flatpak Background portal | background permission | exclude on Windows | port |
-| `lock-app.c:13-15,417,422` | `org.gnome/cinnamon/freedesktop.ScreenSaver` signals (`:417`) and `com.canonical.Unity.Session.Locked` (`:422`) | lock when the session locks | `WTSRegisterSessionNotification` | port |
-| `lock-app.c:445,451` | system D-Bus logind `PrepareForSleep` | lock before suspend | `WM_POWERBROADCAST` | port |
-| `lock-app.c:393` | GLib monotonic time | in-app inactivity | same | none |
-| `otpclient-window.c:1893`; `gui-misc.c:257` | `g_application_send_notification` | notifications | GIO backend on Windows or a native toast adapter (unverified) | port |
-| `webcam-scanner.c:50-81` | zbar video processor (V4L, `/dev/video0` per comment at `:42`) | webcam QR scan | zbar's video backend on Windows is unverified; Media Foundation capture feeding a decoder is another option | port |
-| `qrcode-parser.c`, `qr-display-dialog.c:17`, `google-migration.c:92` | zbar, GdkPixbuf, libqrencode, protobuf-c | QR decode/encode, Google migration | same libraries (packaged in MSYS2, see `docs/windows-port.md`) | none |
-| `src/gui/main.c:12` | gettext, `LOCALE_DIR` | translations | relocatable locale dir | port |
-| `otpclient-application.c:161` | `GApplication` default flags | single-instance activation | behaviour on Windows to be verified | port |
-| `gui-misc.c:46-52` | `g_get_user_*_dir`, GKeyFile `otpclient.cfg` | config file | same GLib calls | none |
-| `export-dialog.c:133`, `import-dialog.c:229`, `settings-dialog.c:593`, `otpclient-window.c:3182` | `GtkFileDialog`, native paths | file pickers | same APIs; check Unicode/UNC | none |
-| `otpclient-window.c:1867` | GdkClipboard | copy/clear | same APIs; ownership and delayed clear to be verified | none |
-| `otpclient-application.c:354`, `settings-dialog.c:562,629,646,655` | `__attribute__((unused))` | warnings | fine with GCC/Clang | none |
+| `otpclient-application.c:3,1480-1482` | unconditional `<glib-unix.h>`, `g_unix_signal_add(SIGINT/SIGTERM/SIGHUP)` | clipboard cleanup and quit on termination | `compat/glib-unix.h` + `gui-compat.c`: explicit warning, `ENOSYS`, source ID 0, no handler or source registered. A future `SetConsoleCtrlHandler` bridge must dispatch on the GLib main context and protect application lifetime; close/logoff/shutdown need separate treatment | shim (WINDOWS-STUB) |
+| `otpclient-application.c:6,605-612` | `<unistd.h>`, `getuid()`, runtime-dir + `/doc/`, `/run/user/%u/doc/` | document-portal missing-file diagnostic | UCRT64 has `unistd.h` but no `getuid` declaration. GUI-only forced header supplies an explicit UID sentinel (`G_MAXUINT`, warning, `ENOSYS`), not a user identity. Predicate remains Linux-specific and can misclassify paths; replace its body with a platform predicate returning false on Windows | shim (WINDOWS-STUB) + port pending |
+| `otpclient-application.c:929,948` | `explicit_bzero` | wipe keys/password input | common forced header redirects to `SecureZeroMemory` | shim |
+| `google-migration.c:39,93` | `explicit_bzero` | wipe protobuf secret bytes and decoded payload | same; `_DEFAULT_SOURCE` at `:1` cannot expose this API on UCRT | shim |
+| `dialogs/export-dialog.c:46`; `dialogs/import-dialog.c:43,88,276,288`; `dialogs/manual-add-dialog.c:274`; `dialogs/password-dialog.c:46,136,138,143`; `dialogs/sensitive-dialog.c:27` | `explicit_bzero` | wipe editable text, import passwords, secrets | same; `_DEFAULT_SOURCE` in these files is not a Windows substitute | shim |
+| `otpclient-application.c:366,384,424,860,1006,1134,1782,1837`; `otpclient-window.c:835,842`; `dialogs/settings-dialog.c:186` | libsecret asynchronous store/lookup/clear, sync lookup, round-trip probe | saved DB passwords / migration | unavailable shim; async `secret_password_store` was missing from the CLI shim and is now declared/implemented using the existing GTask error path, without copying the password. Metadata must select the fork `libsecret-1.pc`, not link real MSYS2 libsecret with shim symbols | shim (WINDOWS-STUB) |
+| `otpclient-application.c:1425-1448,2159-2178`; `otpclient-window.c:2472,2487-2491,5271-5285`; `gui-misc.c:12,30,41,85,118,141`; `dialogs/settings-dialog.c:932-965` | GSettings schema/default backend, `changed` notifications | persisted preferences and cross-process sync | API is portable; compiled schema must be shipped. Registry persistence/notification and a possible portable keyfile backend need native verification/owner decision | none at compile time; settings port if needed |
+| `otpclient-application.c:431,769,867,1024,1197,1771,1800`; `otpclient-window.c:831,1531,1536,1565,1723,1745,3079,3423,3838,3967,4756,4776,5096,5120`; `gui-misc.c:152,176,194`; `database-sidebar.c:163` | exact path spelling used for DB matching / secret attributes / property updates | DB identity | no POSIX compile error; alias/case/separator/drive/UNC policy remains undecided. Do not globally replace `g_strcmp0` or lowercase arbitrary paths | port (policy pending) |
+| `tray.c:3,1020` | `<unistd.h>`, `getpid()` | D-Bus tray bus-name suffix | both supplied by MinGW/UCRT headers; original probe compiled this file. No custom unistd shim needed | none at compile time |
+| `tray.c:12-16,216-509,606,709,773,794,808,963,974,1037,1187,1195`; `tray-menu-model.c:31,46-98` | StatusNotifierItem/Watcher, dbusmenu, XDG activation token, private/shared session bus | icon/menu publication, activation and availability | no native Windows shell counterpart in these protocols; `Shell_NotifyIconW`/menu bridge is a candidate. `ENABLE_MINIMIZE_TO_TRAY=OFF` removes tray code/calls now; target-source swap can preserve existing `tray.h` API later. XML/model file is portable data and can stay or be excluded | port; CMake disable/swap |
+| `autostart.c:11,646-649,662,669-684,715-717,740-746,814,824,832-864` | XDG autostart `.desktop`, `INSTALL_BINDIR/otpclient`, desktop Exec quoting/Hidden/X-GNOME keys, 0700 directory | login startup | compiles via GLib but writes a Windows-ineffective `.desktop` entry and reports support/success. Directory mode is not an ACL guarantee. Run key or Startup shortcut is a future candidate; replace entire source with same public API, including honest unsupported results for milestone 1 | port; CMake swap |
+| `autostart.c:52-634` (portal constants `:54-57`; bus operations `:195,241,318,365,381,401,438,451,545,579,614`) | Flatpak Background/Request portals | login/background grant and serialised reconciliation | excluded by `IS_FLATPAK=OFF`; no portal emulation. This does not exclude the unguarded application document-path predicate | none (excluded) |
+| `autostart-policy.c:1-2,88`; `autostart.h:60-133`; `autostart-policy.h:3-4` | reconciliation policy / Flatpak comments | apply support/refusal to settings | portable GLib policy/signatures; no Linux syscall or bus connection here. Preserve callback/result semantics in a replacement backend | none; existing API reused |
+| `lock-app.c:13-15,244-348,413,417,421-424` | session ScreenSaver services, Unity `Locked`, D-Bus subscription/query/watch lifecycle | desktop lock detection | portable GDBus code, Linux services unavailable. WTS notifications remain a candidate; application calls at `otpclient-application.c:1492` and cleanup must remain paired | port |
+| `lock-app.c:352-376,445-463` | system-bus `org.freedesktop.login1` `PrepareForSleep` | suspend lock | built with `IS_FLATPAK=OFF`, still attempts a system bus and emits a debug diagnostic on failure; `WM_POWERBROADCAST` is a candidate, not implemented | port |
+| `lock-app.c:87-239,379-400,467,471-507` | manual lock/unlock, monotonic inactivity timer, shared static `LockData` cleanup | purge key / unlock dialogs / inactivity | portable functionality intertwined with watchers. A whole-file swap must preserve all `lock-app.h` exports and the timer; merely dropping this file or no-oping its initializer is insufficient | none for logic; careful port/swap |
+| `otpclient-application.c:161-164`; `main.c:19,21` | GApplication default flags / registration and activation | single-instance launch | portable API, Windows cross-instance forwarding unverified; policy OPEN. A one-line flags expression could route to a platform function; do not globally redefine GApplication flags | port if required |
+| `otpclient-window.c:1893`; `gui-misc.c:257` | GApplication notifications | copied OTP and messages | portable API; backend delivery for this unpackaged Windows app unverified. Native toast adapter is only a candidate | port if required |
+| `webcam-scanner.c:26,42,50,61,81`; `otpclient-window.c:3239,5409`; `ui/window.ui:293` | zbar video processor, default camera (Linux `/dev/video0` discussed in comment) | webcam QR scan | code does not open `/dev/video0` itself. Backend support unverified; webcam is out of scope per Decision 9, yet source/action/menu remain enabled. A replacement source can return explicit unsupported GTask/sync errors; hiding the action/menu also needs a capability edit | port; CMake swap candidate |
+| `otp-entry.c:489-493,562-576` | `gint64` clock cast to libcotp `long` | current / next TOTP and Steam code | Windows x64 `long` is 32 bits. Next-code path guards `LONG_MAX` at `:567`; current-code path has no matching guard. This is an ABI/runtime limit, not a missing POSIX symbol | port/upstream portability candidate |
+| `main.c:12` | `bindtextdomain(..., LOCALE_DIR)` | localisation | gettext link provided by hook; configured install prefix is not a tested relocatable locale path | port |
+| `gui-misc.c:45-52` | Flatpak/non-Flatpak config directory branch | legacy `otpclient.cfg` | non-Flatpak GLib user-config path is portable; no extra Unix shim | none |
+| `dialogs/export-dialog.c:108,216-220`; `dialogs/import-dialog.c:216,241-266`; `dialogs/settings-dialog.c:531,565-568,585,632-634`; `otpclient-window.c:3182,3485,4592,4828,4870` | GtkFileDialog / GFile native paths | file pickers and backups | portable API; verify Unicode, spaces, UNC, cancellation and existing private-file shim behaviour on Windows | none; runtime verification |
+| `otpclient-window.c:1820,1840-1841,1867,3257,3314` | GdkClipboard ownership/clear and texture reads | OTP clipboard timeout and image scan | portable API; native ownership, delayed clearing and termination behaviour unverified, especially with signal stub | none; runtime verification |
+
+### Coverage of remaining GUI source files
+
+The rows above account for 19 translation units. The other eight have no direct Linux-only construct found by the include/call/path/protocol scan:
+
+| Source | Surface checked |
+|---|---|
+| `otp-button-row.c:1-3` | GTK/libadwaita version fallback and widgets; no Unix API |
+| `qrcode-parser.c:1-10,108,121` | zbar image decoder and GdkPixbuf file loading; packaged dependencies, image loader runtime still needs staging |
+| `google-migration.pb-c.c:9`; `google-migration.pb-c.h:7-14` | generated protobuf-c code/version guards |
+| `dialogs/db-info-dialog.c:1-2` | libadwaita and DB metadata |
+| `dialogs/edit-token-dialog.c:1-10` | GTK editor / shared DB routines |
+| `dialogs/kdf-dialog.c:1-4` | KDF UI / shared libgcrypt routines |
+| `dialogs/qr-display-dialog.c:3,17` | libqrencode to GdkTexture, no camera backend |
+| `dialogs/whats-new-dialog.c:1-3` | libadwaita dialog and resource text |
+
+`autostart-policy.c` is covered above; it is portable too. All companion headers, `ui/*.ui`, `ui/*.css` and `gui.gresource.xml` were searched. Apart from declared tray/autostart/lock APIs, dbusmenu XML and the webcam menu reference, no additional Unix coupling was found there. `src/gui/CMakeLists.txt:1-15,26-32` generates resources with `glib-compile-resources` and globs all GUI/common sources; this is a build-tool requirement, not a Unix API. Generated `resources.c` is a resource blob. This inventory is static evidence, not proof that every MSYS2 ABI, loader or runtime integration works.
+
+No `GUnixFDList`, Unix-fd D-Bus calls, `GUnixInputStream`, `GUnixOutputStream`, `GDesktopAppInfo`, `G_OS_UNIX` branches, `/proc` opens, `fork/exec`, `flock/fsync`, POSIX `open/read/write`, `sys/*` includes or X11/Wayland API calls were found directly in `src/gui`. The common sources compiled into the GUI still require section 1's shims. `<unistd.h>` occurs only in application/tray; MinGW supplies it, so shadowing the whole CRT header would add unnecessary risk.
+
+### Minimal edits and source substitution candidates (not implemented)
+
+| Concern | No upstream edit through CMake? | Smallest routing alternative / limitation |
+|---|---|---|
+| Tray | Yes: remove `src/gui/tray.c` from `OTPClient`'s `SOURCES`, append `src/platform/windows/tray-win.c`; retain/export all `tray.h` functions. Current probe simply disables the existing option | No caller edit needed. Native icon/menu/window-recovery/lifetime must preserve existing contracts |
+| Autostart | Yes: swap `autostart.c` for `autostart-win.c`, keep `autostart-policy.c` if useful | No caller edit needed; preserve all seven `autostart.h` functions and reconciliation/callback semantics, including `answered`/`superseded`. Milestone 1 must report unsupported rather than successful desktop-file writes |
+| Session/suspend lock | Technically yes: whole `lock-app.c` swap with the same ten-function API | Large duplication risk: manual purge/unlock UI, activity tracking and timer share private state with bus watchers. Prefer extracting only watcher init/cleanup behind a small interface; initialization and cleanup routing alone require preserving shared state/timer first, not just two no-op calls |
+| Webcam | Yes: swap `webcam-scanner.c`, preserving sync, async and finish APIs, return `G_IO_ERROR_NOT_SUPPORTED` | Menu/action remains unless a capability check is routed at `otpclient-window.c:5409` and the UI menu reference; do not silently retain capture for milestone 1 |
+| Flatpak document diagnostic | Not a useful leaf-source swap: helper is static inside the 2245-line application source | Replace `db_path_is_document_portal` body (`:600-612`) with a platform call, Linux body unchanged in its adapter and Windows false. A one-line caller replacement at `:650` alone leaves the `getuid` helper compiled and potentially unused; the compile-only UID stub is still necessary until extraction |
+| Single-instance policy | Whole application/main replacement would duplicate much unrelated code | One-line route of the `"flags"` value at application `:161` plus a platform declaration if a different registration policy is chosen; native activation/IPC is still a separate decision |
+| Notification delivery | `gui-misc.c` could be swapped, but the second call is inside the large window file | One-line wrapper call at each send site (`window:1893`, `gui-misc:257`) if backend tests require it |
+| Search-provider settings | Excluding the provider target does not remove `dialogs/settings-dialog.c:861-895`'s GNOME/KRunner controls | Route integration-row construction through a capability helper (larger than a one-line change unless first extracted). Avoid swapping the whole settings dialog merely to hide two rows |
+
+For a future source swap, obtain the target `SOURCES` in the deferred hook, match/remove the original absolute path (fail if missing or duplicated), set the filtered list and append the alternative with `target_sources`. Do not alter `GUI_SOURCE_FILES` after `add_executable`, add both implementations (duplicate symbols), or use filename globs for the alternative. No swaps or desktop ports are implemented by the current compile-wiring change. Linux target source lists remain untouched.
 
 ## 3. Search provider and D-Bus data
 
@@ -76,11 +119,11 @@ Every Linux/POSIX/desktop-specific coupling found in the tree (upstream 5.2.2), 
 | Where | Item | Note |
 |---|---|---|
 | `CMakeLists.txt:101-108` | `PkgConfig REQUIRED`; `uuid` and `libsecret` unconditional | `uuid` and `libsecret` stay required even with the GUI and provider off. `cmake/windows/pkgconfig/{uuid,libsecret-1}.pc` satisfy metadata checks; the Windows compat layer supplies UUID symbols and unavailable Secret Service stubs, not real libuuid/libsecret libraries |
-| `CMakeLists.txt:21,26` | GNU-style warnings, `-O3`, `_FORTIFY_SOURCE=3` | Windows hook removes glibc FORTIFY options (`cmake/windows.cmake:24-25`); GNU warnings/`-O3` remain. MSVC is not supported by this toolchain |
-| `CMakeLists.txt:35,44,77,93` | `-fPIE/-pie`, probed hardening flags, ELF linker flags, sanitizers | ELF flags are already Linux-gated; the Windows hook removes `-fPIE/-pie` (`cmake/windows.cmake:25,29`). Windows sanitizers remain unverified |
+| `CMakeLists.txt:21,26` | GNU-style warnings, `-O3`, `_FORTIFY_SOURCE=3` | `otp_windows_apply_compat` removes glibc FORTIFY options for CLI and GUI; GNU warnings/`-O3` remain. MSVC is not supported by this toolchain |
+| `CMakeLists.txt:35,44,77,93` | `-fPIE/-pie`, probed hardening flags, ELF linker flags, sanitizers | ELF flags are already Linux-gated; `otp_windows_apply_compat` removes `-fPIE/-pie` for CLI and GUI. Windows sanitizers remain unverified |
 | `CMakeLists.txt:111-116` | GUI dependency set | `BUILD_GUI=OFF` allows a core/CLI spike without deciding the GUI strategy |
 | `CMakeLists.txt:153-253` | desktop file, man pages, completions, metainfo, `glib-compile-schemas`, `gtk4-update-icon-cache` | the icon-cache command is unconditional, including for CLI-only builds |
-| `src/gui/CMakeLists.txt:26`, `src/cli/CMakeLists.txt:6-9`, `src/search-provider/CMakeLists.txt`, `tests/CMakeLists.txt` | common sources compiled into every target | the Windows hook currently wires only CLI plus its optional shim/console checks; GUI/provider/upstream tests are rejected (`cmake/windows.cmake:12-16`). Even parser tests inherit OS-coupled `common.c` |
+| `src/gui/CMakeLists.txt:26`, `src/cli/CMakeLists.txt:6-9`, `src/search-provider/CMakeLists.txt`, `tests/CMakeLists.txt` | common sources compiled into every target | deferred `cmake/windows.cmake` wires CLI, GUI or both, plus optional shim/console checks. Provider/upstream tests/Flatpak remain rejected. GUI gets `otp-windows-gui.h` (includes common redirects) and `gui-compat.c`; native MSYS2 must set `CMAKE_PROJECT_INCLUDE` explicitly, while the cross toolchain sets it automatically |
 | `tests/CMakeLists.txt:50-57,143` | integration tests are gated on Python, `dbus-daemon`, `glib-compile-schemas`, and `Xvfb` for GUI tests | a missing prerequisite omits those registrations with only a status message; absence is not a pass. Schema-dependent unit tests such as `settings_import` stay registered and can skip themselves |
 | `.ci/*.sh`, `.circleci/config.yml` | Bash, Make, `/usr`, source builds of libcotp (and libbaseencode, which nothing references) | Linux only; a Windows job needs its own scripts |
 

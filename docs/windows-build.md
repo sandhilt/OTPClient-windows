@@ -7,7 +7,7 @@ executable using UCRT, with all `src/common/*.c` compiled into the existing CLI
 target. The latest recorded clean build also linked `otp-windows-shim-check.exe`
 and `otp-windows-console-check.exe` without compiler/linker warnings. Architecture
 selection lives in `cmake/windows-ucrt.cmake`; scope is x64 first. No upstream
-source/build files or DB v3 format were changed. The GUI strategy is decided (see `docs/windows-port.md`); the GUI port has not started.
+source/build files or DB v3 format were changed. GUI compile wiring/audit now exist (see `docs/windows-port.md`); a GUI build with the hook and native GUI execution remain unverified.
 
 Native Windows 11 results are recorded in the branch history and the verification
 matrix below; they were obtained through WSL interop and native console harnesses,
@@ -47,8 +47,14 @@ OS `advapi32`, and removes PIE/glibc FORTIFY options. Metadata-only
 `cmake/windows/pkgconfig/{uuid,libsecret-1}.pc` satisfies the unconditional
 checks; UUID symbols come from the shim and Secret Service is unavailable.
 
-The hook requires CLI on and GUI, search provider, upstream tests and Flatpak
-off. `OTP_WINDOWS_SHIM_CHECKS=ON` builds two separate regression executables,
+The hook now accepts CLI, GUI or both; search provider, upstream tests and Flatpak
+must remain off. The CLI recipe above is unchanged. GUI additionally force-includes
+`compat/otp-windows-gui.h` (which includes the common header) and adds
+`gui-compat.c`; Unix signal registration and document-portal UID are explicit
+stubs. For native MSYS2 UCRT64, set `CMAKE_PROJECT_INCLUDE` explicitly and use
+the native compiler rather than `windows-ucrt.cmake`. Select the fork's UUID and
+libsecret metadata even when real MSYS2 libsecret is installed; it remains unavailable
+through milestone 1. `OTP_WINDOWS_SHIM_CHECKS=ON` builds two separate regression executables,
 not ctest targets. A Windows installer is not implemented: the upstream install
 rules still include man pages, completions, metainfo, schemas and an unconditional
 GTK icon-cache command. Build and stage the executables rather than treating
