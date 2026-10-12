@@ -73,7 +73,8 @@ otp_open (const char *path, int flags, ...)
 int
 otp_chmod (const char *path, int mode)
 {
-    /* WINDOWS-STUB: CRT mode bits cannot enforce a private DACL. */
+    /* WINDOWS-STUB: chmod does not install a private DACL. Only private GIO
+     * exports use the secure creation adapter; other creation paths do not. */
     (void) path;
     (void) mode;
     return 0;
@@ -82,7 +83,8 @@ otp_chmod (const char *path, int mode)
 int
 otp_umask (int mode)
 {
-    /* WINDOWS-STUB: no private DACL is installed on newly created files. */
+    /* WINDOWS-STUB: umask does not constrain CRT/GLib creation. The private
+     * export adapter installs its own DACL independently of this function. */
     (void) mode;
     return 0;
 }
@@ -118,7 +120,13 @@ flock (int fd, int operation)
         ok = LockFileEx (handle, flags, 0, MAXDWORD, MAXDWORD, &overlap);
     }
     if (ok) return 0;
-    errno = GetLastError () == ERROR_LOCK_VIOLATION ? EWOULDBLOCK : EIO;
+    switch (GetLastError ()) {
+    case ERROR_LOCK_VIOLATION: errno = EWOULDBLOCK; break;
+    case ERROR_NOT_SUPPORTED:
+    case ERROR_INVALID_FUNCTION:
+    case ERROR_CALL_NOT_IMPLEMENTED: errno = ENOSYS; break;
+    default: errno = EIO; break;
+    }
     return -1;
 }
 
@@ -134,8 +142,15 @@ tcgetattr (int fd, struct termios *state)
 int
 tcsetattr (int fd, int action, const struct termios *state)
 {
-    (void) action;
+    if (action != TCSANOW && action != TCSADRAIN && action != TCSAFLUSH) {
+        errno = EINVAL;
+        return -1;
+    }
     intptr_t raw_handle = _get_osfhandle (fd);
+    if (action == TCSAFLUSH && !FlushConsoleInputBuffer ((HANDLE) raw_handle)) {
+        errno = ENOTTY;
+        return -1;
+    }
     if (SetConsoleMode ((HANDLE) raw_handle, state->c_lflag)) return 0;
     errno = ENOTTY;
     return -1;
@@ -236,7 +251,7 @@ otp_file_test (const gchar *path, GFileTest test)
     int fd = import_fd (path);
     if (fd < 0) return g_file_test (path, test);
     struct stat st;
-    if (_fstat64 (fd, &st) != 0) return FALSE;
+    if (OTP_CRT_FSTAT (fd, &st) != 0) return FALSE;
     return (test & G_FILE_TEST_EXISTS) ||
            ((test & G_FILE_TEST_IS_REGULAR) && S_ISREG (st.st_mode));
 }
@@ -249,7 +264,7 @@ otp_file_query_info (GFile *file, const char *attributes, GFileQueryInfoFlags fl
     if (!marker) return g_file_query_info (file, attributes, flags, cancellable, error);
     if (g_cancellable_set_error_if_cancelled (cancellable, error)) return NULL;
     struct stat st;
-    if (_fstat64 (GPOINTER_TO_INT (marker) - 1, &st) != 0) {
+    if (OTP_CRT_FSTAT (GPOINTER_TO_INT (marker) - 1, &st) != 0) {
         g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_FAILED, "Cannot stat import descriptor");
         return NULL;
     }
@@ -285,11 +300,56 @@ fd_stream_close (GInputStream *stream, GCancellable *cancellable, GError **error
 }
 
 static void
+fd_stream_finalize (GObject *object)
+{
+    OtpFdStream *self = (OtpFdStream *) object;
+    if (self->fd >= 0) _close (self->fd);
+    G_OBJECT_CLASS (otp_fd_stream_parent_class)->finalize (object);
+}
+
+static goffset
+fd_stream_tell (GFileInputStream *stream)
+{
+    return _lseeki64 (((OtpFdStream *) stream)->fd, 0, SEEK_CUR);
+}
+
+static gboolean
+fd_stream_can_seek (GFileInputStream *stream)
+{
+    return fd_stream_tell (stream) >= 0;
+}
+
+static gboolean
+fd_stream_seek (GFileInputStream *stream, goffset offset, GSeekType type,
+                GCancellable *cancellable, GError **error)
+{
+    if (g_cancellable_set_error_if_cancelled (cancellable, error)) return FALSE;
+    int origin;
+    switch (type) {
+    case G_SEEK_SET: origin = SEEK_SET; break;
+    case G_SEEK_CUR: origin = SEEK_CUR; break;
+    case G_SEEK_END: origin = SEEK_END; break;
+    default:
+        g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT, "Invalid seek type");
+        return FALSE;
+    }
+    if (_lseeki64 (((OtpFdStream *) stream)->fd, offset, origin) >= 0) return TRUE;
+    g_set_error (error, G_IO_ERROR, g_io_error_from_errno (errno),
+                 "Import seek failed: %s", g_strerror (errno));
+    return FALSE;
+}
+
+static void
 otp_fd_stream_class_init (OtpFdStreamClass *klass)
 {
     GInputStreamClass *input = G_INPUT_STREAM_CLASS (klass);
     input->read_fn = fd_stream_read;
     input->close_fn = fd_stream_close;
+    GFileInputStreamClass *file = G_FILE_INPUT_STREAM_CLASS (klass);
+    file->tell = fd_stream_tell;
+    file->can_seek = fd_stream_can_seek;
+    file->seek = fd_stream_seek;
+    G_OBJECT_CLASS (klass)->finalize = fd_stream_finalize;
 }
 
 static void
@@ -322,7 +382,7 @@ otp_file_get_contents (const gchar *path, gchar **contents, gsize *length, GErro
     if (fd < 0) return g_file_get_contents (path, contents, length, error);
     struct stat st;
     *contents = NULL;
-    if (_fstat64 (fd, &st) != 0 || st.st_size < 0 || st.st_size > 64 * 1024 * 1024 ||
+    if (OTP_CRT_FSTAT (fd, &st) != 0 || st.st_size < 0 || st.st_size > 64 * 1024 * 1024 ||
         _lseeki64 (fd, 0, SEEK_SET) < 0) {
         g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_FAILED, "Invalid import descriptor or size");
         return FALSE;
@@ -361,10 +421,20 @@ json_fd_read (void *buffer, size_t length, void *user_data)
 json_t *
 otp_json_load_file (const char *path, size_t flags, json_error_t *error)
 {
+    if (error) memset (error, 0, sizeof (*error));
     int fd = import_fd (path);
-    if (fd < 0) return json_load_file (path, flags, error);
-    if (_lseeki64 (fd, 0, SEEK_SET) < 0) return NULL;
-    return json_load_callback (json_fd_read, GINT_TO_POINTER (fd), flags, error);
+    if (fd >= 0 && _lseeki64 (fd, 0, SEEK_SET) < 0) {
+        if (error) {
+            g_strlcpy (error->source, path, sizeof (error->source));
+            g_snprintf (error->text, sizeof (error->text), "Cannot seek import descriptor: %s", g_strerror (errno));
+        }
+        return NULL;
+    }
+    json_t *result = fd < 0 ? json_load_file (path, flags, error) :
+        json_load_callback (json_fd_read, GINT_TO_POINTER (fd), flags, error);
+    if (!result && error && !error->text[0])
+        g_strlcpy (error->text, "Cannot read import JSON", sizeof (error->text));
+    return result;
 }
 
 /* WINDOWS-STUB: no Secret Service or native credential backend. All operations

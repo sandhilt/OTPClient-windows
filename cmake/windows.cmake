@@ -30,11 +30,24 @@ function(otp_windows_targets)
         set_property(TARGET ${_target} PROPERTY LINK_OPTIONS "${_link}")
     endif()
     target_sources(${_target} PRIVATE "${_otp_windows_root}/compat.c")
-    set_source_files_properties("${_otp_windows_root}/compat.c" TARGET_DIRECTORY ${_target} PROPERTIES
+    target_sources(${_target} PRIVATE "${_otp_windows_root}/security.c" "${_otp_windows_root}/private-file.c")
+    set_source_files_properties("${_otp_windows_root}/compat.c" "${_otp_windows_root}/security.c" "${_otp_windows_root}/private-file.c" TARGET_DIRECTORY ${_target} PROPERTIES
         COMPILE_DEFINITIONS OTP_WINDOWS_COMPAT_IMPLEMENTATION)
     target_include_directories(${_target} PRIVATE "${OTP_WINDOWS_GETTEXT_INCLUDE}")
     target_compile_options(${_target} PRIVATE
         -include "${_otp_windows_root}/compat/otp-windows.h")
-    target_link_libraries(${_target} "${OTP_WINDOWS_GETTEXT_LIBRARY}")
+    target_link_libraries(${_target} "${OTP_WINDOWS_GETTEXT_LIBRARY}" advapi32)
+    option(OTP_WINDOWS_SHIM_CHECKS "Build Windows-only shim regression executable" OFF)
+    if(OTP_WINDOWS_SHIM_CHECKS)
+        add_executable(otp-windows-shim-check
+            "${_otp_windows_root}/shim-check.c" "${_otp_windows_root}/compat.c"
+            "${_otp_windows_root}/security.c" "${_otp_windows_root}/private-file.c")
+        get_target_property(_includes ${_target} INCLUDE_DIRECTORIES)
+        get_target_property(_libraries ${_target} LINK_LIBRARIES)
+        target_include_directories(otp-windows-shim-check PRIVATE ${_includes})
+        target_compile_options(otp-windows-shim-check PRIVATE ${_compile})
+        target_compile_definitions(otp-windows-shim-check PRIVATE OTP_WINDOWS_COMPAT_IMPLEMENTATION)
+        target_link_libraries(otp-windows-shim-check PRIVATE ${_libraries})
+    endif()
 endfunction()
 cmake_language(DEFER CALL otp_windows_targets)

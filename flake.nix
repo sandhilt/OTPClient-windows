@@ -46,6 +46,12 @@
               postPatch = (old.postPatch or "") + ''
                 substituteInPlace CMakeLists.txt --replace-fail "if(NOT APPLE)" "if(NOT APPLE AND NOT WIN32)"
               '';
+              # Upstream omits a RUNTIME destination for the Windows DLL.
+              postInstall = (old.postInstall or "") + ''
+                cotpDll=$(find . -type f -name libcotp.dll -print -quit)
+                test -n "$cotpDll"
+                install -Dm755 "$cotpDll" "$out/bin/libcotp.dll"
+              '';
             });
           });
         in

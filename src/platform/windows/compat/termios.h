@@ -5,6 +5,8 @@ struct termios { DWORD c_lflag; };
 #define ECHOE 0
 #define ECHOK 0
 #define ECHONL 0
-#define TCSAFLUSH 0
+#define TCSANOW 0
+#define TCSADRAIN 1
+#define TCSAFLUSH 2
 int tcgetattr (int fd, struct termios *state);
 int tcsetattr (int fd, int action, const struct termios *state);

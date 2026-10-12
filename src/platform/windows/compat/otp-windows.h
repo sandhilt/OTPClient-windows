@@ -34,6 +34,7 @@ gint otp_mkstemp_full (gchar *template_name, gint flags, gint mode);
 gboolean otp_file_get_contents (const gchar *path, gchar **contents, gsize *length, GError **error);
 json_t *otp_json_load_file (const char *path, size_t flags, json_error_t *error);
 GFileInputStream *otp_file_read (GFile *file, GCancellable *cancellable, GError **error);
+GFileOutputStream *otp_file_replace (GFile *file, const char *etag, gboolean backup, GFileCreateFlags flags, GCancellable *cancellable, GError **error);
 GFile *otp_file_new_for_path (const gchar *path);
 gboolean otp_file_test (const gchar *path, GFileTest test);
 GFileInfo *otp_file_query_info (GFile *file, const char *attributes, GFileQueryInfoFlags flags, GCancellable *cancellable, GError **error);
@@ -53,6 +54,7 @@ GFileInfo *otp_file_query_info (GFile *file, const char *attributes, GFileQueryI
 #define g_file_get_contents otp_file_get_contents
 #define json_load_file otp_json_load_file
 #define g_file_read otp_file_read
+#define g_file_replace otp_file_replace
 #define g_file_new_for_path otp_file_new_for_path
 #define g_file_test otp_file_test
 #define g_file_query_info otp_file_query_info
