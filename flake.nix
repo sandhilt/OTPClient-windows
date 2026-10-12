@@ -27,6 +27,14 @@
             protobufc
             qrencode
           ];
+          windowsPkgs = pkgs.pkgsCross.ucrt64.extend (final: prev: {
+            jansson = prev.jansson.overrideAttrs (_: {
+              # The ELF fixup expects dev/lib/cmake/jansson, but the Windows
+              # package installs its targets in out/cmake and DLLs in out/bin.
+              # OTPClient uses the installed pkg-config file instead.
+              postFixup = "";
+            });
+          });
         in
         {
           # Native Linux build and test: `cmake -B build && cmake --build build && ctest --test-dir build`.
@@ -67,10 +75,10 @@
           # Cross-compile the core to Windows (UCRT, x86_64) and run it under Wine.
           # Experimental: covers the core + CLI dependencies only. GTK4/libadwaita for
           # Windows are expected to come from MSYS2 (see docs/windows-port.md).
-          windows = pkgs.pkgsCross.ucrt64.mkShell {
+          windows = windowsPkgs.mkShell {
             name = "otpclient-windows-cross";
             nativeBuildInputs = with pkgs; [ cmake ninja pkg-config git ripgrep ];
-            buildInputs = with pkgs.pkgsCross.ucrt64; [ glib libgcrypt jansson libcotp ];
+            buildInputs = with windowsPkgs; [ glib libgcrypt jansson libcotp ];
             packages = [ pkgs.wineWow64Packages.stable ];
           };
         });
