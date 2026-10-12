@@ -42,6 +42,10 @@ function(otp_windows_targets)
     find_library(OTP_WINDOWS_GETTEXT_LIBRARY intl
         HINTS "${OTP_WINDOWS_GETTEXT_ROOT}/lib" REQUIRED)
     if(BUILD_GUI)
+        option(OTP_WINDOWS_GUI_SUBSYSTEM "Build OTPClient with the Windows GUI subsystem" ON)
+        # Upstream add_executable() has no WIN32 flag. CMake selects -mwindows
+        # for MinGW through this property; CLI/check targets keep their consoles.
+        set_property(TARGET ${PROJECT_NAME} PROPERTY WIN32_EXECUTABLE ${OTP_WINDOWS_GUI_SUBSYSTEM})
         # The GUI header includes the common redirects as well. Use one forced
         # include group so CMake's option de-duplication cannot drop -include.
         otp_windows_apply_compat(${PROJECT_NAME} otp-windows-gui.h)

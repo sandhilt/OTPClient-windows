@@ -33,7 +33,7 @@ Re-measure before a big refactor; the list moves over time.
 ## Rules
 
 1. **Do not move, rename, reformat or re-indent upstream files.** A rename turns every future upstream change to that file into a conflict.
-2. **Fork-only code lives in new paths** that upstream will never touch: `src/platform/` (see `docs/windows-port.md`), `cmake/`, `packaging/windows/`, `docs/`, `AGENTS.md`, and the Nix dev environment (`flake.nix`, `flake.lock`, `.envrc`). Existing Windows paths are `src/platform/windows/` and `cmake/`; `src/platform/linux/` and `packaging/windows/` remain planned.
+2. **Fork-only code lives in new paths** that upstream will never touch: `src/platform/` (see `docs/windows-port.md`), `cmake/`, `packaging/windows/`, `docs/`, `AGENTS.md`, and the Nix dev environment (`flake.nix`, `flake.lock`, `.envrc`). Existing Windows paths are `src/platform/windows/`, `cmake/` and `packaging/windows/`; `src/platform/linux/` remains planned. Portable staging and the GUI-subsystem property stay in these fork-only paths, requiring no new upstream routing edit.
 3. **Edits to upstream files stay small and mechanical:** a one-line include swap, one function call replacing an inline block, one `add_subdirectory`. No logic rewrites inside the churn hotspots above. Each such edit must be listed in the sections below.
 4. **Prefer shims over `#ifdef`.** A Windows-only shim header or library that satisfies an existing include (`<sys/file.h>`, `<uuid/uuid.h>`, `<libsecret/secret.h>`…) requires zero edits to the call sites. When an `#ifdef _WIN32` is unavoidable, keep it to a single line that dispatches into `src/platform/`, never a block of Windows logic inside an upstream file.
 5. **Keep upstream behaviour the default.** The Linux build must stay byte-for-byte the same configuration. Windows opt-in currently goes through `cmake/windows-ucrt.cmake`, its `CMAKE_PROJECT_INCLUDE` hook and the platform layer, without editing upstream CMake.
@@ -49,7 +49,7 @@ Against local `master`, the only edited upstream files are:
 `AGENTS.md` is also in the filtered diff below, but is a new fork-only file. No upstream C source, header or CMake file is edited. Verify after each change:
 
 ```sh
-git diff master --stat -- . ':!docs' ':!src/platform' ':!cmake' ':!flake.nix' ':!flake.lock' ':!.envrc'
+git diff master --stat -- . ':!docs' ':!src/platform' ':!cmake' ':!packaging/windows' ':!flake.nix' ':!flake.lock' ':!.envrc'
 ```
 
 ### Planned routing edits (not yet made)

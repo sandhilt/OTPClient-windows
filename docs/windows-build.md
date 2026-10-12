@@ -7,7 +7,11 @@ executable using UCRT, with all `src/common/*.c` compiled into the existing CLI
 target. The latest recorded clean build also linked `otp-windows-shim-check.exe`
 and `otp-windows-console-check.exe` without compiler/linker warnings. Architecture
 selection lives in `cmake/windows-ucrt.cmake`; scope is x64 first. No upstream
-source/build files or DB v3 format were changed. GUI compile wiring/audit now exist (see `docs/windows-port.md`); a GUI build with the hook and native GUI execution remain unverified.
+source/build files or DB v3 format were changed. The supplied native MSYS2 logs
+now record a successful GUI build with the hook and a five-second startup with
+the memory settings backend, but with a missing-schema warning. Portable GUI
+staging scripts now exist; their execution and visual result remain unverified
+(see the portable GUI section below and `docs/windows-port.md`).
 
 Native Windows 11 results are recorded in the branch history and the verification
 matrix below; they were obtained through WSL interop and native console harnesses,
@@ -449,3 +453,252 @@ verification. For Wine import/export, convert each CLI path with `winepath -w`
 and create the password file with the shim helper. If Wine cannot persist/report
 the protected DACL or persistent-ACL volume flag, the private adapter must fail;
 do not disable its checks to obtain a pass.
+
+## Portable GUI zip: staging and runtime (2026-10-12)
+
+The supplied `51-gui-build-with-hook.log` reports a successful native UCRT64
+compile/link. `80-gui-start.log` and its stderr record a process still alive
+at five seconds (`timeout_rc=124`), with `GSETTINGS_BACKEND=memory` and
+`Settings schema 'com.github.paolostivanin.OTPClient' is not installed`.
+This is prior-run evidence, not a new execution of the packaging scripts or
+proof of a usable window. This packaging change was checked by reading sources,
+package files, PE headers/import tables and logs, plus Bash syntax checks.
+Windows programs, PowerShell, Nix, CMake builds and visual checks were not run.
+
+`packaging/windows/stage-gui.sh` runs offline inside the portable MSYS2 UCRT64
+shell. Its only destination is its staging-directory argument, default
+`/c/Users/hilt/AppData/Local/otp-dev/stage/otpclient`. Inputs are the repository,
+`build-gui-hook/src/gui/otpclient.exe`, optional CLI from that build or
+`build-cli/src/cli/otpclient-cli.exe`, `prefix/bin`, and `/ucrt64`. Environment
+overrides are `OTP_DEV_ROOT`, `OTP_SOURCE_ROOT`, `OTP_GUI_BUILD`, `OTP_CLI_BUILD`,
+`OTP_PREFIX_ROOT`, `OTP_UCRT_ROOT`, and `OTP_OBJDUMP`. Use the matching UCRT64
+pkg-config environment when choosing a different runtime root.
+
+The destination must be empty or carry `.otpclient-stage`; input overlap is
+refused. Reruns replace generated `bin/`, `lib/`, `share/` and launcher/metadata
+files while preserving `config/` and `logs/`. It does not install packages, call
+`cmake --install`, modify the source data, or change persistent environment
+variables. Close staged processes before restaging. An interrupted stage is
+incomplete and must be rerun; the marker alone is not verification.
+
+```text
+otpclient/
+  .otpclient-stage
+  otpclient.cmd, otpclient.ps1, capture-window.ps1
+  check-stage.sh, runtime-common.sh       maintenance checks need MSYS2
+  dll-manifest.tsv, icon-names.txt, pixbuf-loaders-dir.txt
+  bin/
+    otpclient.exe, otpclient-cli.exe      CLI optional
+    gsettings.exe, gdk-pixbuf-query-loaders.exe
+    *.dll                               recursively resolved non-system imports
+    gio-querymodules.exe                only if GIO extensions exist
+  lib/
+    gdk-pixbuf-2.0/<ABI>/loaders/*.dll
+    gdk-pixbuf-2.0/<ABI>/loaders.cache
+    gio/modules/                        optional DLLs and giomodule.cache
+  share/
+    glib-2.0/schemas/*.gschema.xml, gschemas.compiled
+    icons/hicolor/, icons/Adwaita/
+    gtk-4.0/, mime/, libwmf/              present runtime data trees
+    locale/<language>/LC_MESSAGES/*.mo   available selected catalogs
+  config/glib-2.0/settings/keyfile        created only with the keyfile option
+  logs/                                 check diagnostics, exclude from release zip
+```
+
+The script seeds `objdump -p` traversal with both app executables, runtime
+helpers, every installed pixbuf loader and any GIO extension DLLs. Dependencies
+come only from `prefix/bin` and UCRT64 `bin`; conflicting same-named DLLs fail.
+Windows `System32` DLLs and API-set imports remain OS-provided. Unknown imports
+fail rather than silently producing an incomplete zip. `dll-manifest.tsv`
+records each import/source. This covers PE imports plus those explicitly seeded
+plugins; arbitrary late-loaded codecs/media/TLS modules are not proven by an
+import table. Video/webcam integration remains outside milestone 1.
+
+The project's unchanged `data/*.gschema.xml` and GTK4 settings/inspector schemas
+are copied and compiled with `glib-compile-schemas --strict`; GTK Demo schemas,
+developer codegen/GDB data, desktop/service files and Linux search-provider
+metadata are excluded. The app's UI/CSS resource is already embedded by
+`src/gui/CMakeLists.txt` / `gui.gresource.xml`; it needs no loose `.ui` file.
+GTK and libadwaita DLLs carry their built-in widget resources/styles. GTK emoji
+data and MIME metadata are copied when available. Fonts come from Windows;
+the minimal theme is not a replacement for the complete desktop icon set.
+
+The icon selection is extracted from C strings and `src/gui/ui/*.ui`, including
+dialogs and the UI files in `gui.gresource.xml`, plus twelve common GTK widget
+fallbacks. The two unchanged project SVGs go in hicolor. Matching Adwaita SVG /
+symbolic PNG files and RTL variants retain their original relative paths. The
+staged Adwaita `index.theme` inherits only hicolor, dropping the unstaged
+AdwaitaLegacy theme. No source theme or stale package `icon-theme.cache` is
+copied. GTK can scan these directories without a cache; additional toolkit or
+file-chooser icons still need visual verification.
+
+### Loader relocation and process environment
+
+The launcher runs the bundled `gdk-pixbuf-query-loaders.exe` on the staged DLLs,
+with a 15-second tool timeout, at staging initialization and again on **every
+launch**, including after moving/extracting the zip. It writes UTF-8 without a
+BOM, removes build-directory comments and normalizes module entries to absolute
+forward-slash paths inside the **current** stage. It rejects external/missing
+paths, stderr diagnostics or a count differing from the staged modules, then
+replaces the cache. GIO extension caches, when applicable, are regenerated too.
+This intentionally avoids relying on relative-cache support in a particular
+pixbuf build; the supplied older query output actually contains relative paths,
+and upstream supports them when built with `GDK_PIXBUF_RELOCATABLE`
+([source](https://github.com/GNOME/gdk-pixbuf/blob/master/gdk-pixbuf/gdk-pixbuf-io.c)).
+The chosen first-launch regeneration still works with an absolute-only build.
+The stage must be writable; read-only media are not supported by this launcher.
+Simultaneous first launches and UNC/Unicode paths have not been tested.
+
+`otpclient.cmd` invokes Windows PowerShell with a command-local policy override;
+`otpclient.ps1` sets these variables only for its process and child app:
+
+| Variable | Value / purpose |
+|---|---|
+| `GSETTINGS_SCHEMA_DIR` | `<stage>/share/glib-2.0/schemas` |
+| `GSETTINGS_BACKEND` | `registry` initially; `keyfile` is an explicit option |
+| `GDK_PIXBUF_MODULE_FILE` | regenerated `<stage>/lib/gdk-pixbuf-2.0/<ABI>/loaders.cache` |
+| `GDK_PIXBUF_MODULEDIR` | staged loader directory, for the query helper |
+| `XDG_DATA_DIRS` | `<stage>/share`; Windows separates multiple directories with `;` |
+| `GIO_MODULE_DIR` | `<stage>/lib/gio/modules` |
+| `PATH` | only `<stage>/bin` and Windows OS directories; no MSYS2 runtime on the app path |
+| `XDG_CONFIG_HOME` | `<stage>/config` only when choosing `keyfile` |
+
+Registry is the first probe, **not a settled storage policy**. GLib's Windows
+registry backend uses `HKCU\Software\GSettings` by default
+([GLib API](https://docs.gtk.org/gio-win32/func.registry_settings_backend_new.html)).
+Settings therefore remain per-user and do not travel with the zip.
+
+For a portable keyfile, change the single default line
+`[string]$SettingsBackend = 'registry'` to `'keyfile'` in the staged launcher,
+or call `otpclient.ps1 -SettingsBackend keyfile` (also accepted via the `.cmd`).
+This sets `XDG_CONFIG_HOME=<stage>/config`, so the backend file is
+`<stage>/config/glib-2.0/settings/keyfile`; it also relocates other application
+config files. GLib chooses that filename internally
+([backend source](https://github.com/GNOME/glib/blob/main/gio/gkeyfilesettingsbackend.c));
+Windows GLib honors `XDG_CONFIG_HOME`
+([directory source](https://github.com/GNOME/glib/blob/main/glib/gutils.c)).
+If roaming storage is preferred, replace that assignment with
+`Join-Path $env:APPDATA 'OTPClient'`; the keyfile then lives at
+`%APPDATA%\OTPClient\glib-2.0\settings\keyfile`. The database/data directory is
+not relocated by this packaging change. Backend switching does not migrate
+settings or make those storage locations equivalent. Persistence, notifications
+and settings export/import require separate native tests.
+
+The current recorded PE has subsystem **3 (console)**. Upstream GUI CMake uses
+ordinary `add_executable`, with no `WIN32` or `-mwindows`. The fork-only deferred
+hook now exposes `OTP_WINDOWS_GUI_SUBSYSTEM=ON` by default and sets the GUI target's
+`WIN32_EXECUTABLE` property (MinGW: `-mwindows`). Reconfigure/relink to obtain
+subsystem **2 (GUI)**; set the option OFF for console diagnostics. CLI and check
+targets retain consoles. The launcher reads the PE subsystem and uses
+`ProcessStartInfo.CreateNoWindow` for subsystem 3, suppressing its console
+without hiding the GTK window. The `.cmd` host itself can briefly flash when
+double-clicked; native suppression/normal GUI presentation remains unverified.
+No upstream CMake edit is needed or proposed.
+
+### Translations and remaining differences
+
+`po/` contains only two `.pot` templates, with no `.po` / `.mo` files. There is
+no translation compilation/install rule in root or GUI CMake. The currently
+exported `build-gui-hook/version.h` defines `LOCALE_DIR` as `/locale` (the
+`SHARE_INSTALL_PREFIX` template input was unset). Staging copies optional app
+catalogs found under the build/prefix `share/locale`, and available GTK40,
+libadwaita, GLib and pixbuf catalogs. Copying app catalogs does **not** make
+`main.c`'s configured `bindtextdomain` path relocatable. App translations are
+absent in this build, and their future relocation needs a separate fork-only
+adapter; no upstream edit is proposed here. Toolkit catalog lookup also needs
+native relocation verification.
+
+The existing signal, hardening and secret-service stubs remain. A compiled
+schema does not implement registry/keyfile parity, crash-dump prevention,
+memlock sizing, ACL guarantees, directory durability, Windows notifications,
+session lock, autostart, tray or camera capture. Schema defaults are preserved,
+including a search-provider setting whose provider is not built on Windows.
+Some desktop-integration UI rows still remain. Milestone 1 is not complete
+solely because startup diagnostics pass.
+
+### Manager: exact next native sequence
+
+First transfer the **working-tree** `packaging/windows/`, modified
+`cmake/windows.cmake` and documentation to the exported
+`C:\Users\hilt\AppData\Local\otp-dev\src\repo`. `git archive HEAD` alone omits
+these uncommitted/new files. Copy the supplied `90-stage-gui.sh` and
+`91-check-stage.sh` wrappers to `otp-dev\scripts`, alongside the existing
+`51-gui-build-with-hook.sh`. Close existing OTPClient instances. No package
+installation/network step is needed for the already provisioned tree.
+
+In native Windows PowerShell, stop on the first nonzero exit:
+
+```powershell
+$ot = 'C:\Users\hilt\AppData\Local\otp-dev'
+$runner = Join-Path $ot 'run-msys2.ps1'
+& $runner -Script '/c/Users/hilt/AppData/Local/otp-dev/scripts/51-gui-build-with-hook.sh'
+if ($LASTEXITCODE -ne 0) { throw 'GUI rebuild failed' }
+& $runner -Script '/c/Users/hilt/AppData/Local/otp-dev/scripts/90-stage-gui.sh'
+if ($LASTEXITCODE -ne 0) { throw 'GUI staging failed' }
+& $runner -Script '/c/Users/hilt/AppData/Local/otp-dev/scripts/91-check-stage.sh'
+if ($LASTEXITCODE -ne 0) { throw 'Registry stage checks failed' }
+# Optional keyfile comparison after registry; this creates stage/config.
+& $runner -Command 'bash /c/Users/hilt/AppData/Local/otp-dev/scripts/91-check-stage.sh keyfile'
+if ($LASTEXITCODE -ne 0) { throw 'Keyfile stage checks failed' }
+# Use a separate PowerShell process so the capture is bounded and returns a status.
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$ot\stage\otpclient\capture-window.ps1" `
+    -StageDir "$ot\stage\otpclient" -OutputPath "$ot\logs\92-otpclient-window.png" -SettingsBackend registry
+if ($LASTEXITCODE -ne 0) { throw 'Capture or graceful shutdown failed' }
+```
+
+The wrappers copy their repository scripts from the exported source before
+running, validate Bash syntax and log PASS/FAIL plus duration to
+`otp-dev/logs/90-stage-gui.log` and `91-check-stage.log`. Script 90 records
+source hashes; script 91 keeps detailed check artifacts in the stage's `logs/`.
+Run the PS parser before the sequence if reviewing in isolation:
+
+```powershell
+foreach ($name in 'otpclient.ps1', 'capture-window.ps1') {
+    $tokens = $null; $errors = $null
+    [System.Management.Automation.Language.Parser]::ParseFile(
+        "$ot\src\repo\packaging\windows\$name", [ref]$tokens, [ref]$errors) | Out-Null
+    if ($errors.Count) { $errors | Format-List; throw "PowerShell parse failed: $name" }
+}
+```
+
+`check-stage.sh [stage] [registry|keyfile] [--static-only]` prints separate
+PASS/FAIL lines for PE/`ldd` closure (rejecting build-tree fallback), schema
+lookup, backend read, launcher/cache initialization and a six-second startup.
+It greps stderr for missing schemas/icons and image-loader errors. Expected
+hardening/signal warnings are explicitly reported as remaining limitations.
+The timed probe terminates the process (`124` / `137` expected); this is not a
+clean-close or clipboard-cleanup test. No DISPLAY, Xvfb or visual inspection is
+required for the checker. An unavailable interactive Windows desktop can still
+prevent actual GTK startup; use `--static-only` to skip that step, which prints
+SKIP and never claims a complete runtime pass. Its schema/cache helpers still
+execute natively. Do not run the full startup probe against an existing app
+instance: early activation exits are reported as failures.
+
+`capture-window.ps1` was prepared but deliberately not run. It refuses existing
+OTPClient processes, launches the staged app, waits up to 30 seconds for its
+visible main-window handle, requests foreground, allows two seconds for paint,
+and saves the window rectangle via System.Drawing / CopyFromScreen. It closes
+only the newly launched process, waits five seconds and reports a failure if
+forced termination is needed. It refuses to overwrite an existing PNG. Use a
+new output filename on reruns. Screen occlusion, off-screen content, DPI/GPU
+rendering and remote-desktop behavior need the owner's visual review; a saved
+PNG is not itself approval of the UI.
+
+Before releasing a zip, the manager must also exercise ordinary launch/close,
+settings persistence across launches and notifications across processes,
+password/unlock, database reopen, import/export, QR image/display and clipboard
+behavior. Test an extracted copy in a different directory (including a space
+or Unicode name), launched through its `.cmd`/`.ps1` without MSYS2 on PATH.
+After review, create the zip from a **fresh dedicated stage**, not one containing
+`config/` or `logs/` from these probes. Windows dependencies' licensing/notice
+assembly and signing are not implemented by this staging script; this is a
+milestone probe directory, not a release-approved distribution.
+
+Read-only validation of the existing native tree for this change found 16
+pixbuf loader DLLs, 85 non-system DLLs in the import closure of app/CLI/helpers/
+loaders, no unresolved imports or differing same-named DLLs, and all 32 selected
+icon names in Adwaita. Those are static snapshot counts, not staged/runtime
+results. All 15 relevant Bash files (packaging helpers, numbered wrappers and
+prior run2 shell helpers) pass individual `bash -n` checks. PowerShell syntax,
+staging idempotence in MSYS2, actual schema/backend/cache runtime, subsystem-2
+relink, console suppression, GUI function and screenshot remain **UNVERIFIED**.
