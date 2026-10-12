@@ -34,6 +34,19 @@
               # OTPClient uses the installed pkg-config file instead.
               postFixup = "";
             });
+            # libgcrypt's x86_64 MPI assembly is built with -Wa,--noexecstack,
+            # which the MinGW assembler rejects. Use the C fallbacks on Windows.
+            libgcrypt = prev.libgcrypt.overrideAttrs (old: {
+              configureFlags = (old.configureFlags or [ ]) ++ [ "--disable-asm" ];
+            });
+            # libcotp passes ELF-only "-z relro/noexecstack" to the linker whenever
+            # the target is not Apple; GNU ld for MinGW rejects them. Upstream
+            # candidate: guard with NOT WIN32.
+            libcotp = prev.libcotp.overrideAttrs (old: {
+              postPatch = (old.postPatch or "") + ''
+                substituteInPlace CMakeLists.txt --replace-fail "if(NOT APPLE)" "if(NOT APPLE AND NOT WIN32)"
+              '';
+            });
           });
         in
         {

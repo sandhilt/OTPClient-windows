@@ -56,12 +56,19 @@ Stub list: **none implemented**. No security behaviour or DB format was changed.
 No upstream files were edited. The required Linux 36/36 result remains pending;
 the denied shell invocation is not a test pass. Wine was not attempted.
 
-## Update from the manager (same day)
+## Update from the manager (same day): the cross shell builds
 
 Codex's sandbox cannot reach the Nix daemon, so it could not build anything. The
-manager reran `nix build .#devShells.x86_64-linux.windows --no-link` outside that
-sandbox. With the Jansson `postFixup` override the Jansson failure is gone, and
-the next cross-build failure is libgcrypt 1.12.4 for `x86_64-w64-mingw32`:
-`x86_64-w64-mingw32-as: unrecognized option '--noexecstack'` while assembling
-`mpi/*-asm.S` (`-Wa,--noexecstack` is passed by libgcrypt's build). Nix-level
-builds therefore stay with the manager; Codex edits sources.
+manager reran the builds outside that sandbox and fixed the cross dependencies in
+`flake.nix` (all in the `windowsPkgs` overrides, no nixpkgs files touched):
+
+| Package | Failure for `x86_64-w64-mingw32` | Override |
+|---|---|---|
+| jansson 2.15 | nixpkgs `postFixup` expects `dev/lib/cmake/jansson/...` | empty `postFixup` |
+| libgcrypt 1.12.4 | `as: unrecognized option '--noexecstack'` while assembling `mpi/*-asm.S` | `--disable-asm` (C fallbacks; slower bignum math, which this app barely uses) |
+| libcotp 4.1.0 | `ld: unrecognized option '-z'`: its CMake passes ELF-only `-z relro/noexecstack` unless `APPLE` | `if(NOT APPLE)` -> `if(NOT APPLE AND NOT WIN32)` (upstream candidate for libcotp) |
+
+`nix build .#devShells.x86_64-linux.windows --no-link` now succeeds. Inside
+`nix develop .#windows`: `x86_64-w64-mingw32-gcc` 16.2.0, glib 2.88.3, libgcrypt
+1.12.4, cotp 4.1.0, jansson 2.15.0 and `wine` are available. Still **not** done:
+no OTPClient source has been compiled for Windows yet.
