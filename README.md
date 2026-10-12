@@ -1,6 +1,25 @@
 # OTPClient
 A highly secure GTK4/libadwaita application for managing TOTP and HOTP two-factor authentication tokens, with CLI and desktop-search integration.
 
+<!-- BEGIN FORK NOTICE (keep this block self-contained so upstream README edits merge around it) -->
+> **This is a fork: [`sandhilt/OTPClient-windows`](https://github.com/sandhilt/OTPClient-windows)**, a work-in-progress
+> Windows port of [paolostivanin/OTPClient](https://github.com/paolostivanin/OTPClient).
+>
+> **Status: planning.** There is no Windows build yet. The code is currently identical to upstream 5.2.2 and everything
+> below describes upstream behaviour on Linux. Only the documentation (`docs/`, `AGENTS.md`) and the Nix dev environment (`flake.nix`, `flake.lock`, `.envrc`) are new.
+>
+> Goals: run on Windows, isolate the graphical and OS-specific parts behind small interfaces, and keep merging
+> upstream releases cheap by putting fork code in new directories instead of editing upstream files.
+>
+> - [`docs/architecture.md`](docs/architecture.md): how the code is organised today
+> - [`docs/windows-port.md`](docs/windows-port.md): seams, phases and the open decisions
+> - [`docs/platform-dependencies.md`](docs/platform-dependencies.md): every Linux-only dependency, with file and line
+> - [`docs/upstream-sync.md`](docs/upstream-sync.md): rules for staying mergeable with upstream
+> - [`AGENTS.md`](AGENTS.md): guidance for AI coding agents working in this repository
+>
+> Upstream wiki, issues and releases: <https://github.com/paolostivanin/OTPClient>.
+<!-- END FORK NOTICE -->
+
 ## Features
 
 ### Supported standards
