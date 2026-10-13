@@ -42,6 +42,11 @@ if [[ -f "$GUI_BUILD/src/cli/otpclient-cli.exe" ]]; then
 elif [[ -f "$CLI_BUILD/src/cli/otpclient-cli.exe" ]]; then
     cp -- "$CLI_BUILD/src/cli/otpclient-cli.exe" "$STAGE/bin/"
 fi
+for tool in otp-windows-shim-check otp-windows-console-check otp-windows-crash-probe; do
+    if [[ -f "$GUI_BUILD/$tool.exe" ]]; then
+        cp -- "$GUI_BUILD/$tool.exe" "$STAGE/bin/"
+    fi
+done
 for tool in gdk-pixbuf-query-loaders gsettings; do
     [[ -f "$UCRT/bin/$tool.exe" ]] || fail "Missing runtime tool: $tool"
     cp -- "$UCRT/bin/$tool.exe" "$STAGE/bin/"
@@ -151,8 +156,8 @@ while IFS= read -r name; do
     done
 done < "$STAGE/icon-names.txt"
 
-# No .po -> .mo rules exist upstream. Copy built catalogs if supplied, plus
-# the toolkit catalogs; do not pretend that copied app catalogs fix LOCALE_DIR.
+# Copy optional existing app/toolkit catalogs, then compile every project .po
+# from source so a stale build/prefix catalog cannot override a fresh one.
 for locale_root in "$UCRT/share/locale" "$PREFIX/share/locale" \
     "$GUI_BUILD/share/locale" "$CLI_BUILD/share/locale"; do
     [[ -d $locale_root ]] || continue
@@ -164,6 +169,21 @@ for locale_root in "$UCRT/share/locale" "$PREFIX/share/locale" \
         -o -name otpclient-cli.mo -o -name gtk40.mo -o -name libadwaita.mo \
         -o -name glib20.mo -o -name gdk-pixbuf.mo \) -print0)
 done
+po_files=("$REPO/po/"*.po)
+if (( ${#po_files[@]} )); then
+    MSGFMT=${OTP_MSGFMT:-$UCRT/bin/msgfmt.exe}
+    [[ -x $MSGFMT ]] || fail "Missing msgfmt: $MSGFMT"
+    for po in "${po_files[@]}"; do
+        lang=${po##*/}; lang=${lang%.po}
+        directory="$STAGE/share/locale/$lang/LC_MESSAGES"
+        mkdir -p -- "$directory"
+        "$MSGFMT" --check --output-file "$(cygpath -m "$directory/OTPClient.mo")" "$(cygpath -m "$po")"
+        [[ -s "$directory/OTPClient.mo" ]] || fail "No catalog output for $lang"
+    done
+    echo "PASS: compiled ${#po_files[@]} application catalogs (domain OTPClient)"
+else
+    echo 'SKIP: no po/*.po sources; .pot templates do not provide application translations'
+fi
 for file in otpclient.cmd otpclient.ps1 capture-window.ps1 check-stage.sh runtime-common.sh; do
     cp -- "$SCRIPT_DIR/$file" "$STAGE/$file"
 done
@@ -174,4 +194,4 @@ POWERSHELL="$SYSTEM_DIR/WindowsPowerShell/v1.0/powershell.exe"
     -File "$(cygpath -m "$STAGE/otpclient.ps1")" -InitializeOnly
 "$OBJDUMP" -p "$STAGE/bin/otpclient.exe" | grep -E 'Subsystem[[:space:]]' || true
 echo "PASS: staged ${#visited[@]} non-system DLLs in $STAGE"
-echo 'App catalog relocation and GUI appearance still require native verification.'
+echo 'Catalog lookup/relocation and GUI appearance still require native verification.'

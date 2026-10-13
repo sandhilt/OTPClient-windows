@@ -16,6 +16,8 @@
 #include <io.h>
 #include <signal.h>
 #include <sys/stat.h>
+#include <libintl.h>
+#include "../gettext.h"
 
 #define O_NOFOLLOW 0x10000000
 #define O_CLOEXEC _O_NOINHERIT
@@ -43,6 +45,8 @@ gboolean otp_file_test (const gchar *path, GFileTest test);
 GFileInfo *otp_file_query_info (GFile *file, const char *attributes, GFileQueryInfoFlags flags, GCancellable *cancellable, GError **error);
 
 #ifndef OTP_WINDOWS_COMPAT_IMPLEMENTATION
+#undef bindtextdomain
+#define bindtextdomain otp_windows_bindtextdomain
 #define sigemptyset otp_sigemptyset
 #define sigaction(...) otp_sigaction (__VA_ARGS__)
 #define read otp_read

@@ -4,6 +4,71 @@
 #include <aclapi.h>
 #include <io.h>
 #include <errno.h>
+#include "compat/sys/prctl.h"
+#include "compat/sys/resource.h"
+#include "gettext.h"
+
+static void
+test_locale_binding (void)
+{
+    gchar *directory = otp_windows_bindtextdomain ("OTPClient", "/locale");
+    g_assert_nonnull (directory);
+    g_assert_true (g_path_is_absolute (directory));
+    g_autofree gchar *suffix = g_build_filename ("share", "locale", NULL);
+    g_assert_true (g_str_has_suffix (directory, suffix));
+    g_autofree gunichar2 *expected = g_utf8_to_utf16 (directory, -1, NULL, NULL, NULL);
+    WCHAR *bound = wbindtextdomain ("OTPClient", NULL);
+    g_assert_nonnull (bound);
+    g_assert_true (wcscmp (bound, (WCHAR *) expected) == 0);
+    g_autofree gchar *cwd = g_get_current_dir ();
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *temporary = g_dir_make_tmp ("otp-locale-XXXXXX", &error);
+    g_assert_no_error (error);
+    g_assert_cmpint (g_chdir (temporary), ==, 0);
+    g_assert_cmpstr (otp_windows_bindtextdomain ("OTPClient", "/ignored"), ==, directory);
+    g_assert_cmpint (g_chdir (cwd), ==, 0);
+    g_assert_cmpint (g_rmdir (temporary), ==, 0);
+    /* Domains other than the app's must retain the caller's binding. */
+    g_assert_cmpstr (otp_windows_bindtextdomain ("otp-shim-test", cwd), ==, cwd);
+}
+
+static LONG WINAPI
+test_exception_filter (EXCEPTION_POINTERS *exception)
+{
+    (void) exception;
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+static void
+test_crash_protection (void)
+{
+    UINT old_mode = GetErrorMode ();
+    LPTOP_LEVEL_EXCEPTION_FILTER old_filter = SetUnhandledExceptionFilter (test_exception_filter);
+    struct rlimit limit = { 0, 0 };
+    const UINT flags = SEM_NOGPFAULTERRORBOX | SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX;
+    g_assert_cmpint (prctl (PR_SET_DUMPABLE, 0, 0, 0, 0), ==, 0);
+    g_assert_cmpuint (GetErrorMode () & flags, ==, flags);
+    g_assert_cmpuint (GetErrorMode () & old_mode, ==, old_mode);
+    LPTOP_LEVEL_EXCEPTION_FILTER installed = SetUnhandledExceptionFilter (test_exception_filter);
+    g_assert_nonnull (installed);
+    g_assert_true (installed != test_exception_filter);
+    /* CORE must reinstall the same protection after another filter replaced it. */
+    g_assert_cmpint (setrlimit (RLIMIT_CORE, &limit), ==, 0);
+    g_assert_true (SetUnhandledExceptionFilter (test_exception_filter) == installed);
+    g_assert_cmpint (prctl (PR_SET_DUMPABLE, 1), ==, -1);
+    g_assert_cmpint (errno, ==, ENOSYS);
+    g_assert_cmpint (prctl (-1, 0), ==, -1);
+    g_assert_cmpint (errno, ==, ENOSYS);
+    limit.rlim_cur = 1;
+    g_assert_cmpint (setrlimit (RLIMIT_CORE, &limit), ==, -1);
+    g_assert_cmpint (errno, ==, ENOSYS);
+    g_assert_cmpint (setrlimit (RLIMIT_MEMLOCK, &limit), ==, -1);
+    g_assert_cmpint (errno, ==, ENOSYS);
+    g_assert_cmpint (setrlimit (RLIMIT_CORE, NULL), ==, -1);
+    g_assert_cmpint (errno, ==, EINVAL);
+    SetUnhandledExceptionFilter (old_filter);
+    SetErrorMode (old_mode);
+}
 
 static void
 write_private (const char *path, const char *text)
@@ -356,6 +421,8 @@ main (int argc, char **argv)
         return 0;
     }
     g_test_init (&argc, &argv, NULL);
+    g_test_add_func ("/windows/crash-protection", test_crash_protection);
+    g_test_add_func ("/windows/locale-binding", test_locale_binding);
     g_test_add_func ("/windows/private-acl", test_private_acl);
     g_test_add_func ("/windows/private-inheritable-acl", test_private_inheritable_acl);
     g_test_add_func ("/windows/fd-adapters", test_fd_adapters);

@@ -37,17 +37,32 @@ images=()
 while IFS= read -r -d '' file; do images+=("$file"); done < <(
     find "$STAGE/bin" "$STAGE/lib" -type f \( -iname '*.exe' -o -iname '*.dll' \) -print0)
 [[ ${#images[@]} -gt 0 && -f "$STAGE/bin/otpclient.exe" ]] || fail 'No staged executables'
+declare -A staged_dlls=() checked_paths=()
+for image in "${images[@]}"; do
+    if [[ ${image%/*} == "$STAGE/bin" ]]; then
+        name=${image##*/}
+        staged_dlls[${name,,}]=1
+    fi
+done
+stage_lower=${STAGE,,}; system_lower=${SYSTEM_DIR,,}
+winsxs_lower=${system_lower%/*}/winsxs
 : > "$LOGS/ldd.txt"
 before=$failures
+closure_started=$SECONDS
 for image in "${images[@]}"; do
     imports=$(pe_imports "$image") || { bad "Cannot read imports: $image"; continue; }
     while IFS= read -r name; do
         [[ -n $name ]] || continue
         is_system_dll "$name" && continue
-        found=$(find "$STAGE/bin" -maxdepth 1 -type f -iname "$name" -print -quit)
-        [[ -n $found ]] || bad "Missing DLL $name imported by ${image#"$STAGE/"}"
+        [[ -n ${staged_dlls[${name,,}]:-} ]] || bad "Missing DLL $name imported by ${image#"$STAGE/"}"
     done <<< "$imports"
     printf '\n%s\n' "${image#"$STAGE/"}" >> "$LOGS/ldd.txt"
+    # MSYS ldd uses the native loader/debug machinery. Keep the deliberate
+    # crash executable strictly opt-in, even if ldd normally stops before main.
+    if [[ ${image##*/} == otp-windows-crash-probe.exe ]]; then
+        printf 'SKIP: deliberate crash probe; PE imports checked, no ldd\n' >> "$LOGS/ldd.txt"
+        continue
+    fi
     if output=$("$LDD" "$image" 2>&1); then
         printf '%s\n' "$output" >> "$LOGS/ldd.txt"
     else
@@ -61,16 +76,21 @@ for image in "${images[@]}"; do
     # Reject fallback to the build dependency tree, even if ldd resolves it.
     while IFS= read -r resolved; do
         resolved=${resolved%$'\r'}
+        # ldd recursively repeats the same DLL paths for almost every image.
+        # Validate each distinct spelling once, retaining every ldd invocation
+        # and its diagnostics. Avoid thousands of MSYS child processes.
+        [[ -z ${checked_paths[$resolved]:-} ]] || continue
+        checked_paths[$resolved]=1
         resolved=$(cygpath -u "$resolved")
         resolved=$(realpath -m -- "$resolved")
-        stage_lower=${STAGE,,}; system_lower=${SYSTEM_DIR,,}; resolved_lower=${resolved,,}
-        winsxs_lower=${system_lower%/*}/winsxs
+        resolved_lower=${resolved,,}
         if [[ $resolved_lower != "$stage_lower/"* && $resolved_lower != "$system_lower/"* &&
               $resolved_lower != "$winsxs_lower/"* ]]; then
             bad "External DLL resolved by ldd: $resolved"
         fi
     done < <(sed -nE 's/^.* => (.*) \(0x[[:xdigit:]]+\).*$/\1/p' <<< "$output")
 done
+echo "INFO: PE/ldd duration=$((SECONDS - closure_started))s; ${#checked_paths[@]} distinct resolved paths"
 (( failures != before )) || pass "PE imports and ldd closure (${#images[@]} images)"
 
 if "$STAGE/bin/gsettings.exe" list-schemas > "$LOGS/schemas.txt" 2> "$LOGS/schemas.stderr" &&
@@ -145,8 +165,14 @@ else
     else
         pass 'No schema/icon/pixbuf startup diagnostics'
     fi
-    if grep -qiE 'WINDOWS-STUB|core dumps|RLIMIT_CORE' "$LOGS/startup.stderr"; then
-        echo 'INFO: existing hardening/signal stubs remain (see logs/startup.stderr)'
+    if grep -qiE 'core dumps|RLIMIT_CORE' "$LOGS/startup.stderr"; then
+        bad 'Crash protection installation failed (see logs/startup.stderr)'
+    fi
+    if grep -qiE 'Windows locale initialization failed|Cannot (resolve Windows executable-relative locale directory|bind Windows application message catalogs)' "$LOGS/startup.stderr"; then
+        bad 'Application locale initialization/binding failed (see logs/startup.stderr)'
+    fi
+    if grep -qi 'WINDOWS-STUB' "$LOGS/startup.stderr"; then
+        echo 'INFO: remaining Windows stubs (see logs/startup.stderr)'
     fi
 fi
 if (( failures )); then fail "$failures stage check(s) failed; logs: $LOGS"; fi

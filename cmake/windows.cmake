@@ -20,14 +20,40 @@ function(otp_windows_apply_compat _target _header)
     endif()
     target_sources(${_target} PRIVATE "${_otp_windows_root}/compat.c")
     target_sources(${_target} PRIVATE "${_otp_windows_root}/console.c")
+    target_sources(${_target} PRIVATE "${_otp_windows_root}/hardening.c")
+    target_sources(${_target} PRIVATE "${_otp_windows_root}/gettext.c")
     target_sources(${_target} PRIVATE "${_otp_windows_root}/security.c" "${_otp_windows_root}/private-file.c")
-    set_source_files_properties("${_otp_windows_root}/compat.c" "${_otp_windows_root}/console.c" "${_otp_windows_root}/security.c" "${_otp_windows_root}/private-file.c" TARGET_DIRECTORY ${_target} PROPERTIES
+    set_source_files_properties("${_otp_windows_root}/compat.c" "${_otp_windows_root}/console.c" "${_otp_windows_root}/security.c" "${_otp_windows_root}/private-file.c" "${_otp_windows_root}/gettext.c" TARGET_DIRECTORY ${_target} PROPERTIES
         COMPILE_DEFINITIONS OTP_WINDOWS_COMPAT_IMPLEMENTATION)
     target_include_directories(${_target} BEFORE PRIVATE
         "${_otp_windows_root}/compat" "${OTP_WINDOWS_GETTEXT_INCLUDE}")
     target_compile_options(${_target} PRIVATE
         "SHELL:-include \"${_otp_windows_root}/compat/${_header}\"")
     target_link_libraries(${_target} "${OTP_WINDOWS_GETTEXT_LIBRARY}" advapi32)
+endfunction()
+
+function(otp_windows_catalogs)
+    # Upstream has templates but no .po compilation rules. Keep all generated
+    # output in the build tree, using the same domain as both upstream mains.
+    file(GLOB _po_files CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/po/*.po")
+    if(NOT _po_files)
+        message(STATUS "Windows catalogs: no po/*.po sources (templates are not translations)")
+        return()
+    endif()
+    # This must run on the build host, never a cross-built msgfmt.exe.
+    find_program(OTP_WINDOWS_MSGFMT NAMES msgfmt REQUIRED NO_CMAKE_FIND_ROOT_PATH)
+    set(_catalogs)
+    foreach(_po IN LISTS _po_files)
+        get_filename_component(_lang "${_po}" NAME_WLE)
+        set(_dir "${PROJECT_BINARY_DIR}/share/locale/${_lang}/LC_MESSAGES")
+        set(_mo "${_dir}/${GETTEXT_PACKAGE}.mo")
+        add_custom_command(OUTPUT "${_mo}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${_dir}"
+            COMMAND "${OTP_WINDOWS_MSGFMT}" --check --output-file "${_mo}" "${_po}"
+            DEPENDS "${_po}" VERBATIM)
+        list(APPEND _catalogs "${_mo}")
+    endforeach()
+    add_custom_target(otp-windows-catalogs ALL DEPENDS ${_catalogs})
 endfunction()
 
 function(otp_windows_targets)
@@ -41,6 +67,7 @@ function(otp_windows_targets)
         HINTS "${OTP_WINDOWS_GETTEXT_ROOT}/include" REQUIRED)
     find_library(OTP_WINDOWS_GETTEXT_LIBRARY intl
         HINTS "${OTP_WINDOWS_GETTEXT_ROOT}/lib" REQUIRED)
+    otp_windows_catalogs()
     if(BUILD_GUI)
         option(OTP_WINDOWS_GUI_SUBSYSTEM "Build OTPClient with the Windows GUI subsystem" ON)
         # Upstream add_executable() has no WIN32 flag. CMake selects -mwindows
@@ -68,6 +95,8 @@ function(otp_windows_targets)
             "SHELL:-include \"${_otp_windows_root}/compat/otp-windows.h\""
             "SHELL:-include \"${_otp_windows_root}/compat/otp-windows-gui.h\"")
         add_executable(otp-windows-shim-check
+            "${_otp_windows_root}/hardening.c"
+            "${_otp_windows_root}/gettext.c"
             "${_otp_windows_root}/shim-check.c" "${_otp_windows_root}/compat.c" "${_otp_windows_root}/console.c"
             "${_otp_windows_root}/security.c" "${_otp_windows_root}/private-file.c")
         get_target_property(_includes ${_target} INCLUDE_DIRECTORIES)
@@ -77,6 +106,7 @@ function(otp_windows_targets)
         target_compile_definitions(otp-windows-shim-check PRIVATE OTP_WINDOWS_COMPAT_IMPLEMENTATION)
         target_link_libraries(otp-windows-shim-check PRIVATE ${_libraries})
         add_executable(otp-windows-console-check
+            "${_otp_windows_root}/hardening.c"
             "${_otp_windows_root}/console-check.c" "${_otp_windows_root}/console.c"
             "${_otp_windows_root}/compat.c" "${_otp_windows_root}/security.c"
             "${_otp_windows_root}/private-file.c")
@@ -85,6 +115,9 @@ function(otp_windows_targets)
         target_compile_definitions(otp-windows-console-check PRIVATE
             OTP_WINDOWS_COMPAT_IMPLEMENTATION OTP_WINDOWS_CONSOLE_CHECK)
         target_link_libraries(otp-windows-console-check PRIVATE ${_libraries})
+        add_executable(otp-windows-crash-probe
+            "${_otp_windows_root}/crash-probe.c" "${_otp_windows_root}/hardening.c")
+        target_compile_options(otp-windows-crash-probe PRIVATE ${_compile})
     endif()
 endfunction()
 cmake_language(DEFER CALL otp_windows_targets)
