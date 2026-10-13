@@ -68,6 +68,31 @@ cmake --build /tmp/otp-win-build -j8
 - Stage the cross runtime DLLs beside the executables (recipe and verification matrix in `docs/windows-build.md`). From WSL, copy to a Windows directory and run the cross-built `.exe` natively through interop; use PowerShell for interactive console tests. Wine is only a quick headless check, not proof of native console or ACL behaviour.
 - GUI strategy is decided (2026-10-12, see `docs/windows-port.md`): GUI phase 1 ports GTK4/libadwaita to Windows; GUI phase 2 extracts a UI-agnostic core later. Secret storage, crash-dump prevention, real memlock sizing and directory durability are incomplete; see the `WINDOWS-STUB` markers.
 
+### Portable Windows development tree
+
+`OTP_DEV_ROOT` is the portable dev tree containing MSYS2 UCRT64,
+`prefix/`, build directories, `stage/`, and `scripts/`. Never hard-code user
+paths in versioned files. Set it before build/staging; it can be changed for
+each invocation. A typical Windows value is `%LOCALAPPDATA%\otp-dev`.
+Both packaging scripts require a nonempty value and convert Windows paths
+with `cygpath -u`.
+
+MSYS2 Bash:
+
+```bash
+export OTP_DEV_ROOT="$(cygpath -u "$LOCALAPPDATA")/otp-dev"
+```
+
+PowerShell:
+
+```powershell
+$env:OTP_DEV_ROOT = Join-Path $env:LOCALAPPDATA 'otp-dev'
+```
+
+Use the same tree with each shell's path spelling: WSL uses
+`/mnt/<drive>/...`, MSYS2 uses `/<drive>/...`, PowerShell uses Windows paths.
+The environment variable is inherited by shells launched from PowerShell.
+
 ## Code conventions
 
 - Match the surrounding C style (GLib types and `g_autoptr`/`g_autofree`, 4-space indent, space before call parentheses: `g_free (x)`).

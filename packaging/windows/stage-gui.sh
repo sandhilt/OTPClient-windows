@@ -3,10 +3,11 @@
 set -Eeuo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 source "$SCRIPT_DIR/runtime-common.sh"
+[[ -n ${OTP_DEV_ROOT:-} ]] || fail 'set OTP_DEV_ROOT to the portable dev tree'
 require_msys
+DEV=$(cygpath -u "$OTP_DEV_ROOT")
 trap 'rc=$?; if (( rc == 0 )); then echo "PASS: stage-gui"; else echo "FAIL: stage-gui rc=$rc"; fi' EXIT
 
-DEV=${OTP_DEV_ROOT:-/c/Users/hilt/AppData/Local/otp-dev}
 REPO=$(cd -- "${OTP_SOURCE_ROOT:-$SCRIPT_DIR/../..}" && pwd)
 UCRT=${OTP_UCRT_ROOT:-/ucrt64}
 PREFIX=${OTP_PREFIX_ROOT:-$DEV/prefix}

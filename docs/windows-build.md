@@ -528,12 +528,35 @@ Windows programs, PowerShell, Nix, CMake builds and visual checks were not run.
 
 `packaging/windows/stage-gui.sh` runs offline inside the portable MSYS2 UCRT64
 shell. Its only destination is its staging-directory argument, default
-`/c/Users/hilt/AppData/Local/otp-dev/stage/otpclient`. Inputs are the repository,
+`$OTP_DEV_ROOT/stage/otpclient`. Inputs are the repository,
 `build-gui-hook/src/gui/otpclient.exe`, optional CLI from that build or
 `build-cli/src/cli/otpclient-cli.exe`, `prefix/bin`, and `/ucrt64`. Environment
 overrides are `OTP_DEV_ROOT`, `OTP_SOURCE_ROOT`, `OTP_GUI_BUILD`, `OTP_CLI_BUILD`,
 `OTP_PREFIX_ROOT`, `OTP_UCRT_ROOT`, and `OTP_OBJDUMP`. Use the matching UCRT64
 pkg-config environment when choosing a different runtime root.
+
+`OTP_DEV_ROOT` is the portable dev tree containing MSYS2 UCRT64,
+`prefix/`, build directories, `stage/`, and `scripts/`. Never hard-code user
+paths in versioned files. Set it before build/staging; it can be changed for
+each invocation. A typical Windows value is `%LOCALAPPDATA%\otp-dev`.
+Both packaging scripts require a nonempty value and convert Windows paths
+with `cygpath -u`.
+
+MSYS2 Bash:
+
+```bash
+export OTP_DEV_ROOT="$(cygpath -u "$LOCALAPPDATA")/otp-dev"
+```
+
+PowerShell:
+
+```powershell
+$env:OTP_DEV_ROOT = Join-Path $env:LOCALAPPDATA 'otp-dev'
+```
+
+Use the same tree with each shell's path spelling: WSL uses
+`/mnt/<drive>/...`, MSYS2 uses `/<drive>/...`, PowerShell uses Windows paths.
+The environment variable is inherited by shells launched from PowerShell.
 
 The destination must be empty or carry `.otpclient-stage`; input overlap is
 refused. Reruns replace generated `bin/`, `lib/`, `share/` and launcher/metadata
@@ -720,14 +743,14 @@ obsolete destination files:
 
 ```bash
 set -o pipefail
-OTP_REPO=/home/sandhilt/workspace/OTPClient-windows
-OTP_DEV=/mnt/c/Users/hilt/AppData/Local/otp-dev
-OTP_WRAPPERS=/tmp/claude-1000/-home-sandhilt-workspace-OTPClient-windows/42d068b6-91af-47fd-bf85-ce9c99ea1974/scratchpad/msys2-codex
-mkdir -p "$OTP_DEV/src/repo" "$OTP_DEV/scripts"
+OTP_REPO=$(git rev-parse --show-toplevel)
+: "${OTP_DEV_ROOT:?Set OTP_DEV_ROOT to the portable dev tree in WSL path form}"
+: "${OTP_WRAPPERS:?Set OTP_WRAPPERS to the directory containing the supplied wrappers}"
+mkdir -p "$OTP_DEV_ROOT/src/repo" "$OTP_DEV_ROOT/scripts"
 git -C "$OTP_REPO" ls-files -z -c -o --exclude-standard |
     tar -C "$OTP_REPO" --null --verbatim-files-from -cf - -T - |
-    tar -C "$OTP_DEV/src/repo" -xf -
-cp "$OTP_WRAPPERS"/{51-gui-build-with-hook,90-stage-gui,91-check-stage}.sh "$OTP_DEV/scripts/"
+    tar -C "$OTP_DEV_ROOT/src/repo" -xf -
+cp "$OTP_WRAPPERS"/{51-gui-build-with-hook,90-stage-gui,91-check-stage}.sh "$OTP_DEV_ROOT/scripts/"
 ```
 
 Close existing OTPClient instances. No package
@@ -736,16 +759,17 @@ installation/network step is needed for the already provisioned tree.
 In native Windows PowerShell, stop on the first nonzero exit:
 
 ```powershell
-$ot = 'C:\Users\hilt\AppData\Local\otp-dev'
+if (-not $env:OTP_DEV_ROOT) { throw 'set OTP_DEV_ROOT to the portable dev tree' }
+$ot = $env:OTP_DEV_ROOT
 $runner = Join-Path $ot 'run-msys2.ps1'
-& $runner -Script '/c/Users/hilt/AppData/Local/otp-dev/scripts/51-gui-build-with-hook.sh'
+& $runner -Script (Join-Path $ot 'scripts\51-gui-build-with-hook.sh')
 if ($LASTEXITCODE -ne 0) { throw 'GUI rebuild failed' }
-& $runner -Script '/c/Users/hilt/AppData/Local/otp-dev/scripts/90-stage-gui.sh'
+& $runner -Script (Join-Path $ot 'scripts\90-stage-gui.sh')
 if ($LASTEXITCODE -ne 0) { throw 'GUI staging failed' }
-& $runner -Script '/c/Users/hilt/AppData/Local/otp-dev/scripts/91-check-stage.sh'
+& $runner -Script (Join-Path $ot 'scripts\91-check-stage.sh')
 if ($LASTEXITCODE -ne 0) { throw 'Registry stage checks failed' }
 # Optional keyfile comparison after registry; this creates stage/config.
-& $runner -Command 'bash /c/Users/hilt/AppData/Local/otp-dev/scripts/91-check-stage.sh keyfile'
+& $runner -Command 'bash "$(cygpath -u "$OTP_DEV_ROOT")/scripts/91-check-stage.sh" keyfile'
 if ($LASTEXITCODE -ne 0) { throw 'Keyfile stage checks failed' }
 $bin = Join-Path $ot 'stage\otpclient\bin'
 & "$bin\otp-windows-shim-check.exe" -p /windows/crash-protection
@@ -773,7 +797,8 @@ Run the deliberate crash separately from an interactive native PowerShell,
 without a debugger. It contains no secrets and needs only OS runtime DLLs:
 
 ```powershell
-$ot = 'C:\Users\hilt\AppData\Local\otp-dev'
+if (-not $env:OTP_DEV_ROOT) { throw 'set OTP_DEV_ROOT to the portable dev tree' }
+$ot = $env:OTP_DEV_ROOT
 $probe = Join-Path $ot 'stage\otpclient\bin\otp-windows-crash-probe.exe'
 $localDumps = 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps'
 # Read existing policy only; global and per-executable overrides may choose

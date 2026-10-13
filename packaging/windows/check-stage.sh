@@ -3,9 +3,11 @@
 set -Eeuo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 source "$SCRIPT_DIR/runtime-common.sh"
+[[ -n ${OTP_DEV_ROOT:-} ]] || fail 'set OTP_DEV_ROOT to the portable dev tree'
 require_msys
+DEV=$(cygpath -u "$OTP_DEV_ROOT")
 [[ $# -le 3 ]] || fail 'Usage: check-stage.sh [stage] [registry|keyfile] [--static-only]'
-STAGE=$(realpath -e -- "${1:-${OTP_DEV_ROOT:-/c/Users/hilt/AppData/Local/otp-dev}/stage/otpclient}")
+STAGE=$(realpath -e -- "${1:-$DEV/stage/otpclient}")
 BACKEND=${2:-registry}
 [[ $BACKEND == registry || $BACKEND == keyfile ]] || fail 'Select registry or keyfile'
 [[ -z ${3:-} || ${3:-} == --static-only ]] || fail 'Unknown check option'

@@ -108,7 +108,7 @@ Other sources:
 Consequences for the plan:
 
 - Option 1 (GTK4 stays) is technically feasible at the dependency level; the open questions are quality (look and feel, GPU quirks) and the missing OS integrations (tray, autostart, lock), not whether the libraries exist.
-- The core + CLI cross toolchain spike is complete through the Nix MinGW-w64 UCRT shell. The separate GUI dependency tree is portable MSYS2 UCRT64. Local `.pc` files at `C:\Users\hilt\AppData\Local\otp-dev` were read on 2026-10-12: GTK 4.24.1, libadwaita 1.10.0, GLib 2.90.1, libcotp 4.1.0 in `prefix`. These differ from the earlier package-index snapshot above; metadata inspection is not execution proof. MSYS2 packages real libsecret, but Decision 5 still selects the fork's unavailable shim and metadata. UUID comes from the existing GLib-based shim, not a libuuid package.
+- The core + CLI cross toolchain spike is complete through the Nix MinGW-w64 UCRT shell. The separate GUI dependency tree is portable MSYS2 UCRT64. Local `.pc` files at `$OTP_DEV_ROOT` were read on 2026-10-12: GTK 4.24.1, libadwaita 1.10.0, GLib 2.90.1, libcotp 4.1.0 in `prefix`. These differ from the earlier package-index snapshot above; metadata inspection is not execution proof. MSYS2 packages real libsecret, but Decision 5 still selects the fork's unavailable shim and metadata. UUID comes from the existing GLib-based shim, not a libuuid package.
 
 ## GUI decision: what "isolate the GUI" means (decided 2026-10-12)
 
